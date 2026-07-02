@@ -1,0 +1,29 @@
+# RT-Thread Studio 编译产物
+Debug/
+build/
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+
+# Python 缓存
+*.pyc
+__pycache__/
+
+# Eclipse / RT-Thread Studio IDE 配置（可选保留）
+# .settings/
+# .cproject
+# .project
+
+# 临时文件
+*.tmp
+*.bak
+*.orig
+*.swp
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
