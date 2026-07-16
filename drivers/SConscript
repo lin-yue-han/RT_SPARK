@@ -1,24 +1,29 @@
-
 import os
 from building import *
 
 cwd = GetCurrentDir()
-src  = Glob('*.c')
-# add cubemx drivers
+
+# 核心驱动源文件（只编译实际需要的）
 src = Split('''
-Src/stm32f4xx_hal_msp.c
-Src/main.c
-Src/system_stm32f4xx.c
+board.c
+drv_common.c
+drv_clk.c
+drv_gpio.c
+drv_usart.c
+drv_soft_i2c.c
+drv_pwm.c
 ''')
 
 path = [cwd]
-path += [cwd + '/Inc']
-# add HAL driver and CMSIS include paths
+path += [cwd + '/include']
+path += [cwd + '/include/config']
+
+# 添加 HAL 驱动和 CMSIS 头文件路径
 path += [cwd + '/../libraries/STM32F4xx_HAL_Driver/Inc']
 path += [cwd + '/../libraries/STM32F4xx_HAL_Driver/Inc/Legacy']
 path += [cwd + '/../libraries/CMSIS/Device/ST/STM32F4xx/Include']
 path += [cwd + '/../libraries/CMSIS/Include']
 
-group = DefineGroup('cubemx', src, depend = [''], CPPPATH = path)
+group = DefineGroup('Drivers', src, depend = [''], CPPPATH = path)
 
 Return('group')

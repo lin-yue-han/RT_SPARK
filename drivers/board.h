@@ -67,18 +67,21 @@ extern "C"
  *
  */
 
-/* UART1 使用 PB6(TX)/PB7(RX) 复用引脚，连接 GY-BN0055 */
+/* UART1：BNO055 接 PA9(TX)/PA10(RX)（对齐原理图） */
 #define BSP_USING_UART1
-#define BSP_UART1_TX_PIN       "PB6"
-#define BSP_UART1_RX_PIN       "PB7"
+#define BSP_UART1_TX_PIN       "PA9"
+#define BSP_UART1_RX_PIN       "PA10"
 
-#define BSP_USING_UART4
-#define BSP_UART4_TX_PIN       "PA0"
-#define BSP_UART4_RX_PIN       "PA1"
+/* UART2：4G/ESP32-C3 接 PA2(TX)/PA3(RX)（对齐原理图，替代原 UART4） */
+#define BSP_USING_UART2
+#define BSP_UART2_TX_PIN       "PA2"
+#define BSP_UART2_RX_PIN       "PA3"
 
-#define BSP_USING_PWM1
-#define BSP_PWM1_CH1_PIN       "PE9"
-#define BSP_PWM1_CH2_PIN       "PE11"
+/* UART3：FinSH 调试控制台 接 PB10(TX)/PB11(RX)
+ * BNO055 独占 UART1，控制台迁移到 UART3 避免串口冲突 */
+#define BSP_USING_UART3
+#define BSP_UART3_TX_PIN       "PB10"
+#define BSP_UART3_RX_PIN       "PB11"
 /*-------------------------- UART CONFIG END --------------------------*/
 
 

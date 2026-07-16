@@ -1,0 +1,36 @@
+import os
+from building import *
+
+cwd = GetCurrentDir()
+
+# 启动文件（汇编）
+src = Split('''
+CMSIS/Device/ST/STM32F4xx/Source/Templates/gcc/startup_stm32f407xx.S
+''')
+
+# 只编译核心 HAL 驱动文件（RT-Thread drivers 会调用这些）
+src += Split('''
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_cortex.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma_ex.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr_ex.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim_ex.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_uart.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2c.c
+STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2c_ex.c
+''')
+
+path = [cwd + '/STM32F4xx_HAL_Driver/Inc']
+path += [cwd + '/STM32F4xx_HAL_Driver/Inc/Legacy']
+path += [cwd + '/CMSIS/Device/ST/STM32F4xx/Include']
+path += [cwd + '/CMSIS/Include']
+
+group = DefineGroup('HAL_Driver', src, depend = [''], CPPPATH = path)
+
+Return('group')

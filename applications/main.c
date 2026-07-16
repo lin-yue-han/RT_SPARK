@@ -1,11 +1,14 @@
 /*
- * main.c - 电机控制入口
+ * main.c - 电机控制与加热片控制入口
  *
  * 引脚说明（在 board.h 中已配置）：
  *   左电机：PA0 (AIN1), PA1 (AIN2)
  *   右电机：PB15 (BIN1), PB14 (BIN2)
  *   软件I2C：SCL→PD10, SDA→PD8  (已在 board.h 中配置)
- *   UART1：TX→PB6, RX→PB7        (已在 board.h 中配置)
+ *   UART1：TX→PA9, RX→PA10       (BNO055 独占，已在 board.h 中配置)
+ *   UART2：TX→PA2, RX→PA3        (4G Core-Y100M，已在 board.h 中配置)
+ *   UART3：TX→PB10, RX→PB11      (FinSH 控制台，已在 board.h 中配置)
+ *   加热片继电器：PA8 (HEATER_CTRL) → 继电器IN（高电平触发）
  *
  * 说明：机器车挂载于电缆上，仅支持前进/后退/停止，
  * 不具备转弯能力。上电后待机，检测到覆冰概率超过
@@ -22,6 +25,43 @@
 /* 右电机引脚 */
 #define RIGHT_BIN1  GET_PIN(B, 15)  /* PB15 */
 #define RIGHT_BIN2  GET_PIN(B, 14)  /* PB14 */
+
+/* 加热片继电器引脚：PA8 → HEATER_CTRL → 继电器IN
+ * 继电器模块 VCC 接 5V (RELAY_5V)，GND 接地
+ * 默认高电平触发：PA8=高 → 继电器闭合 → 加热片通电 */
+#define HEATER_CTRL_PIN  GET_PIN(A, 8)   /* PA8 */
+
+/* 触发电平定义：高电平触发时 ON=HIGH, OFF=LOW
+ * 若实物为低电平触发，交换这两行即可 */
+#define RELAY_ON_LEVEL   PIN_HIGH
+#define RELAY_OFF_LEVEL  PIN_LOW
+
+/* 初始化加热片继电器 */
+static void heater_relay_init(void)
+{
+    rt_pin_mode(HEATER_CTRL_PIN, PIN_MODE_OUTPUT);
+
+    /* 上电默认关闭加热，必须先写关闭状态 */
+    rt_pin_write(HEATER_CTRL_PIN, RELAY_OFF_LEVEL);
+
+    rt_kprintf("Heater relay initialized on PA8: OFF\n");
+}
+
+/* 开启加热 */
+static void heater_on(void)
+{
+    rt_pin_write(HEATER_CTRL_PIN, RELAY_ON_LEVEL);
+    rt_kprintf("Heater ON (PA8=%s)\n", RELAY_ON_LEVEL == PIN_HIGH ? "HIGH" : "LOW");
+}
+MSH_CMD_EXPORT(heater_on, turn heater relay on);
+
+/* 关闭加热 */
+static void heater_off(void)
+{
+    rt_pin_write(HEATER_CTRL_PIN, RELAY_OFF_LEVEL);
+    rt_kprintf("Heater OFF (PA8=%s)\n", RELAY_OFF_LEVEL == PIN_LOW ? "LOW" : "HIGH");
+}
+MSH_CMD_EXPORT(heater_off, turn heater relay off);
 
 /* 初始化电机引脚（只需调用一次） */
 static void motor_init(void)
@@ -97,11 +137,14 @@ MSH_CMD_EXPORT(stop, stop);
 
 int main(void)
 {
-    /* 系统启动时初始化电机引脚（仅一次） */
+    /* 系统启动时初始化电机引脚 */
     motor_init();
 
+    /* 初始化加热片继电器（上电默认关闭） */
+    heater_relay_init();
+
     /* 上电后待机，等待覆冰检测触发自动除冰 */
-    rt_kprintf("Motor control ready. Standby for de-icing trigger.\n");
-    rt_kprintf("Commands: forward, backward, stop\n");
+    rt_kprintf("System ready. Standby for de-icing trigger.\n");
+    rt_kprintf("Commands: forward, backward, stop, heater_on, heater_off\n");
     return 0;
 }
