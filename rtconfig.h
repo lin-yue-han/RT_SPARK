@@ -46,10 +46,10 @@
 /* Kernel Device Object */
 
 #define RT_USING_DEVICE
-/* 纯硬件桥接模式：关闭控制台和 FinSH，UART1 完全用于透传 */
-/* #define RT_USING_CONSOLE */
+/* 恢复控制台用于 SSCOM 输出，但关闭 FinSH */
+#define RT_USING_CONSOLE
 #define RT_CONSOLEBUF_SIZE 256
-#define RT_CONSOLE_DEVICE_NAME ""
+#define RT_CONSOLE_DEVICE_NAME "uart1"
 /* end of Kernel Device Object */
 #define RT_VER_NUM 0x40100
 /* end of RT-Thread Kernel */

@@ -24,7 +24,6 @@
 #define BUF_SIZE        256
 #define RESP_TIMEOUT_MS 2000
 
-static rt_device_t g_uart1 = RT_NULL;
 static rt_device_t g_uart2 = RT_NULL;
 
 /* 探测结果缓冲区 */
@@ -41,7 +40,10 @@ static void bridge_print(const char *fmt, ...)
     va_start(args, fmt);
     rt_vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    rt_device_write(g_uart1, 0, buf, rt_strlen(buf));
+    rt_device_t console = rt_console_get_device();
+    if (console) {
+        rt_device_write(console, 0, buf, rt_strlen(buf));
+    }
 }
 
 static void hex_dump(const char *label, const rt_uint8_t *data, int len)
@@ -279,17 +281,15 @@ static void probe_dtr_rts(void)
 
 static int probe_init(void)
 {
-    g_uart1 = rt_device_find(UART1_NAME);
     g_uart2 = rt_device_find(UART2_NAME);
 
-    if (g_uart1 == RT_NULL || g_uart2 == RT_NULL) {
-        bridge_print("[ERR] UART not found!\n");
+    if (rt_console_get_device() == RT_NULL) {
+        bridge_print("[ERR] Console device not available!\n");
         return -1;
     }
 
-    /* 只写模式打开 UART1 */
-    if (rt_device_open(g_uart1, RT_DEVICE_OFLAG_WRONLY) != RT_EOK) {
-        bridge_print("[ERR] UART1 open failed!\n");
+    if (g_uart2 == RT_NULL) {
+        bridge_print("[ERR] UART2 not found!\n");
         return -1;
     }
 
@@ -298,10 +298,6 @@ static int probe_init(void)
         bridge_print("[ERR] UART2 open failed!\n");
         return -1;
     }
-
-    struct serial_configure cfg1 = RT_SERIAL_CONFIG_DEFAULT;
-    cfg1.baud_rate = 115200;
-    rt_device_control(g_uart1, RT_DEVICE_CTRL_CONFIG, &cfg1);
 
     bridge_print("\n================================================\n");
     bridge_print("  RT_SPARK - Auto Probe v5\n");
