@@ -12,7 +12,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define UART_NAME       "uart1"
+/* BNO055 使用 UART3(PB10/PB11)，UART1 留给 ST-Link VCP 控制台 */
+#define UART_NAME       "uart3"
 #define UART_BAUDRATE   115200
 /* BNO055 UART 帧最长约 120 字节，留足裕量 */
 #define BUF_SIZE        256
@@ -221,9 +222,9 @@ int bn0055_set_mode(uint8_t mode)
 }
 
 /**
- * @brief 初始化 GY-BN0055（UART1，115200，PA9/PA10）
- *        BNO055 独占 UART1(PA9/PA10)，不使用 FinSH 控制台
- *        数据通过 4G 模块(UART2) 发送到网页展示
+ * @brief 初始化 GY-BN0055（UART3，115200，PB10/PB11）
+ *        BNO055 独占 UART3(PB10/PB11)，UART1 留给 ST-Link VCP 控制台
+ *        数据通过 ST-Link VCP (COM9) 发送到电脑上的 bridge.js
  */
 int bn0055_init(void)
 {
