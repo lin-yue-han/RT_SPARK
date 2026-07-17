@@ -15,13 +15,14 @@
  *   node bridge.js --com-port=\\.\COM9 --tcp-host=frp-oil.com --tcp-port=32762 --ws-port=8080
  *
  * 零依赖：不使用 npm 包，WebSocket 用 Node.js 内置 http + crypto 手写实现
- *         COM 口读取使用 Node.js 内置 fs 模块（Windows 下可直接访问 \\.\COMx）
+ *         COM 口使用 serialport 库（npm install serialport）
  */
 
 const fs = require("fs");
 const net = require("net");
 const http = require("http");
 const crypto = require("crypto");
+const { SerialPort } = require("serialport");
 
 // ---- 参数解析 ----
 const args = process.argv.slice(2);
@@ -31,7 +32,7 @@ function getArg(name, defaultVal) {
   return found ? found.slice(flag.length) : defaultVal;
 }
 
-const COM_PORT   = getArg("com-port", "\\\\.\\COM9");
+const COM_PORT   = getArg("com-port", "COM9");
 const TCP_HOST   = getArg("tcp-host", "frp-oil.com");
 const TCP_PORT   = parseInt(getArg("tcp-port", "32762"), 10);
 const WS_PORT    = parseInt(getArg("ws-port", "8080"), 10);
@@ -358,109 +359,104 @@ connectTCP();
 // ================================================================
 // COM 口读写 — 读取 STM32 通过 ST-Link VCP 输出的 JSON 数据
 // ================================================================
-let comFd = null;
+let comPort = null;
 let comBuffer = "";
-const COM_READ_BUF = Buffer.alloc(4096);
 
 function openComPort() {
-  if (comFd !== null) {
-    try { fs.closeSync(comFd); } catch (e) {}
-    comFd = null;
+  if (comPort) {
+    try { comPort.close(); } catch (e) {}
+    comPort = null;
   }
 
   log("COM", `正在打开 ${COM_PORT}...`);
 
-  fs.open(COM_PORT, "r+", (err, fd) => {
+  comPort = new SerialPort({
+    path: COM_PORT,
+    baudRate: 115200,
+    autoOpen: false,
+  });
+
+  comPort.on('open', () => {
+    log("COM", `${COM_PORT} 已打开 (baud=115200)`);
+  });
+
+  comPort.on('data', (chunk) => {
+    comBuffer += chunk.toString("utf8");
+    stats.bytesReceived += chunk.length;
+
+    let idx;
+    while ((idx = comBuffer.indexOf("\n")) !== -1) {
+      let line = comBuffer.slice(0, idx).trim();
+      comBuffer = comBuffer.slice(idx + 1);
+      if (line.length === 0) continue;
+      stats.comLines++;
+
+      let parsed = null;
+      try {
+        parsed = JSON.parse(line);
+      } catch (e) {
+        continue;
+      }
+
+      const msgType = parsed.type || "unknown";
+      stats.totalMessages++;
+
+      switch (msgType) {
+        case "galloping":
+          log("DATA", `舞动: state=${parsed.state} amp=${parsed.amp_dominant} freq=${parsed.dominant_freq}Hz`);
+          break;
+        case "env":
+          log("DATA", `温湿度: ${parsed.temperature}C  ${parsed.humidity}%RH`);
+          break;
+        case "motor":
+          log("DATA", `电机: ${parsed.motor_state}  pos=${parsed.position}%`);
+          break;
+        case "heartbeat":
+          log("DATA", `心跳 #${stats.totalMessages}`);
+          break;
+        case "boot":
+          log("DATA", `系统启动: ${parsed.msg}`);
+          break;
+        default:
+          log("DATA", `${msgType}: ${line.slice(0, 60)}`);
+      }
+
+      if (tcpClient && tcpClient.writable) {
+        try {
+          tcpClient.write(line + "\n");
+        } catch (e) {
+          log("TCP", `发送失败: ${e.message}`);
+        }
+      }
+
+      broadcastText(line);
+    }
+  });
+
+  comPort.on('error', (err) => {
+    log("COM", `错误: ${err.message}`);
+    comPort = null;
+    setTimeout(openComPort, 3000);
+  });
+
+  comPort.on('close', () => {
+    log("COM", "串口关闭，3秒后重试...");
+    comPort = null;
+    setTimeout(openComPort, 3000);
+  });
+
+  comPort.open((err) => {
     if (err) {
       log("COM", `打开失败: ${err.message}`);
+      comPort = null;
       setTimeout(openComPort, 3000);
-      return;
     }
-    comFd = fd;
-    log("COM", `${COM_PORT} 已打开 (fd=${fd})`);
-    readComLoop();
-  });
-}
-
-function readComLoop() {
-  if (comFd === null) return;
-
-  fs.read(comFd, COM_READ_BUF, 0, COM_READ_BUF.length, null, (err, bytesRead) => {
-    if (err) {
-      log("COM", `读取错误: ${err.message}`);
-      try { fs.closeSync(comFd); } catch (e) {}
-      comFd = null;
-      setTimeout(openComPort, 3000);
-      return;
-    }
-
-    if (bytesRead > 0) {
-      comBuffer += COM_READ_BUF.slice(0, bytesRead).toString("utf8");
-      stats.bytesReceived += bytesRead;
-
-      // 处理按行分割的 JSON 数据
-      let idx;
-      while ((idx = comBuffer.indexOf("\n")) !== -1) {
-        let line = comBuffer.slice(0, idx).trim();
-        comBuffer = comBuffer.slice(idx + 1);
-        if (line.length === 0) continue;
-        stats.comLines++;
-
-        // 尝试解析为 JSON
-        let parsed = null;
-        try {
-          parsed = JSON.parse(line);
-        } catch (e) {
-          // 非 JSON 数据（如 rt_kprintf 输出），忽略
-          continue;
-        }
-
-        const msgType = parsed.type || "unknown";
-        stats.totalMessages++;
-
-        switch (msgType) {
-          case "galloping":
-            log("DATA", `舞动: state=${parsed.state} amp=${parsed.amp_dominant} freq=${parsed.dominant_freq}Hz`);
-            break;
-          case "env":
-            log("DATA", `温湿度: ${parsed.temperature}C  ${parsed.humidity}%RH`);
-            break;
-          case "motor":
-            log("DATA", `电机: ${parsed.motor_state}  pos=${parsed.position}%`);
-            break;
-          case "heartbeat":
-            log("DATA", `心跳 #${stats.totalMessages}`);
-            break;
-          case "boot":
-            log("DATA", `系统启动: ${parsed.msg}`);
-            break;
-          default:
-            log("DATA", `${msgType}: ${line.slice(0, 60)}`);
-        }
-
-        // 通过 TCP 发送到 frp 服务器
-        if (tcpClient && tcpClient.writable) {
-          try {
-            tcpClient.write(line + "\n");
-          } catch (e) {
-            log("TCP", `发送失败: ${e.message}`);
-          }
-        }
-
-        // 通过 WebSocket 广播（本地调试）
-        broadcastText(line);
-      }
-    }
-
-    // 50ms 后再次读取
-    setTimeout(readComLoop, 50);
   });
 }
 
 function writeComData(data) {
-  if (comFd === null) return false;
-  const buf = Buffer.from(data, "utf8");
-  fs.write(comFd, buf, 0, buf.length, null, (err) => {
+  if (!comPort || !comPort.writable) return false;
+  comPort.write(data, (err) => {
     if (err) log("COM", `写入错误: ${err.message}`);
   });
   return true;
@@ -481,7 +477,7 @@ process.on("SIGINT", () => {
   log("SYS", "正在关闭...");
   for (const ws of wsClients) ws.close();
   if (tcpClient) tcpClient.destroy();
-  if (comFd !== null) { try { fs.closeSync(comFd); } catch (e) {} comFd = null; }
+  if (comPort) { try { comPort.close(); } catch (e) {} comPort = null; }
   httpServer.close();
   setTimeout(() => process.exit(0), 500);
 });
