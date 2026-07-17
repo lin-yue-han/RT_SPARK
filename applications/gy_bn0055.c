@@ -12,8 +12,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-/* BNO055 使用 UART3(PB10/PB11)，UART1 留给 ST-Link VCP 控制台 */
-#define UART_NAME       "uart3"
+/* BNO055 使用 UART1(PA9/PA10)，RX 读取传感器数据，TX 留给控制台输出 JSON */
+#define UART_NAME       "uart1"
 #define UART_BAUDRATE   115200
 /* BNO055 UART 帧最长约 120 字节，留足裕量 */
 #define BUF_SIZE        256
@@ -222,9 +222,9 @@ int bn0055_set_mode(uint8_t mode)
 }
 
 /**
- * @brief 初始化 GY-BN0055（UART3，115200，PB10/PB11）
- *        BNO055 独占 UART3(PB10/PB11)，UART1 留给 ST-Link VCP 控制台
- *        数据通过 ST-Link VCP (COM9) 发送到电脑上的 bridge.js
+ * @brief 初始化 GY-BN0055（UART1，115200，PA9/PA10）
+ *        BNO055 使用 UART1 RX(PA10) 读取数据，UART1 TX(PA9) 留给控制台输出 JSON
+ *        FinSH 已关闭，RX 独占给 BNO055，不会冲突
  */
 int bn0055_init(void)
 {
