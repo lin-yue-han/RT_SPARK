@@ -315,9 +315,12 @@ static void gd_extract_features(gd_detector_t *det, gd_feature_t *f)
         float fx = s->x_filt, fy = s->y_filt, fz = s->z_filt;
 
         /* 峰-峰值追踪 */
-        if (fx < min_x) min_x = fx; if (fx > max_x) max_x = fx;
-        if (fy < min_y) min_y = fy; if (fy > max_y) max_y = fy;
-        if (fz < min_z) min_z = fz; if (fz > max_z) max_z = fz;
+        if (fx < min_x) min_x = fx;
+        if (fx > max_x) max_x = fx;
+        if (fy < min_y) min_y = fy;
+        if (fy > max_y) max_y = fy;
+        if (fz < min_z) min_z = fz;
+        if (fz > max_z) max_z = fz;
 
         /* 累积统计 */
         sum_x += fx;  sum_y += fy;  sum_z += fz;

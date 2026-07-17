@@ -11,6 +11,7 @@
 #include <rtdevice.h>
 #include "sht3x.h"
 #include "gy_bn0055.h"
+#include "dtu_sender.h"
 
 /* 全局数据存储 */
 sht3x_data_t  sht3x_data;
@@ -32,9 +33,11 @@ static void sensor_read_all(void)
     /* 读取 SHT3X */
     ret = sht3x_read(&sht3x_data);
     if (ret == RT_EOK) {
-        rt_kprintf("[SHT3X] Temp: %.2f C, Humi: %.2f %%RH\n",
-                   (double)sht3x_data.temperature,
-                   (double)sht3x_data.humidity);
+        rt_kprintf("[SHT3X] Temp: %d.%02d C, Humi: %d.%02d %%RH\n",
+                   (int)sht3x_data.temperature,
+                   (int)((sht3x_data.temperature - (int)sht3x_data.temperature) * 100),
+                   (int)sht3x_data.humidity,
+                   (int)((sht3x_data.humidity - (int)sht3x_data.humidity) * 100));
     } else {
         rt_kprintf("[SHT3X] Read failed (err=%d)\n", ret);
     }
@@ -42,20 +45,21 @@ static void sensor_read_all(void)
     /* 读取 BN0055 */
     ret = bn0055_read(&bn0055_data);
     if (ret == RT_EOK) {
-        rt_kprintf("[BN0055] Accel: %.2f, %.2f, %.2f m/s^2\n",
-                   (double)bn0055_data.accel_x,
-                   (double)bn0055_data.accel_y,
-                   (double)bn0055_data.accel_z);
-        rt_kprintf("[BN0055] Gyro:  %.2f, %.2f, %.2f deg/s\n",
-                   (double)bn0055_data.gyro_x,
-                   (double)bn0055_data.gyro_y,
-                   (double)bn0055_data.gyro_z);
-        rt_kprintf("[BN0055] Euler: H=%.1f R=%.1f P=%.1f\n",
-                   (double)bn0055_data.euler_heading,
-                   (double)bn0055_data.euler_roll,
-                   (double)bn0055_data.euler_pitch);
+        rt_kprintf("[BN0055] Acc: %d.%02d,%d.%02d,%d.%02d  Eul: %d.%02d,%d.%02d,%d.%02d\n",
+                   (int)bn0055_data.accel_x,
+                   (int)((bn0055_data.accel_x - (int)bn0055_data.accel_x) * 100),
+                   (int)bn0055_data.accel_y,
+                   (int)((bn0055_data.accel_y - (int)bn0055_data.accel_y) * 100),
+                   (int)bn0055_data.accel_z,
+                   (int)((bn0055_data.accel_z - (int)bn0055_data.accel_z) * 100),
+                   (int)bn0055_data.euler_heading,
+                   (int)((bn0055_data.euler_heading - (int)bn0055_data.euler_heading) * 100),
+                   (int)bn0055_data.euler_roll,
+                   (int)((bn0055_data.euler_roll - (int)bn0055_data.euler_roll) * 100),
+                   (int)bn0055_data.euler_pitch,
+                   (int)((bn0055_data.euler_pitch - (int)bn0055_data.euler_pitch) * 100));
     } else {
-        rt_kprintf("[BN0055] Read failed\n");
+        rt_kprintf("[BN0055] Read failed (err=%d)\n", ret);
     }
 }
 
@@ -123,43 +127,39 @@ static void sensor_loop(void)
 MSH_CMD_EXPORT(sensor_loop, loop read all sensors every second);
 
 /* ================================================================
- * 上电自动初始化（INIT_APP_EXPORT 会在 main() 之后自动调用）
+ * 传感器初始化函数（供 main() 调用）
  * ================================================================ */
 
+/* 前向声明 */
+void sensor_monitor_start(void);
+
 /**
- * @brief 上电自动初始化传感器
- *        无需手动输入 sensor_init 命令
- * @return 0 成功（INIT_APP_EXPORT 约定返回值）
+ * @brief 初始化传感器（由 main() 调用）
  */
-static int sensor_auto_init(void)
+void sensor_init_all(void)
 {
     int ret;
 
-    rt_kprintf("[AutoInit] Sensor init start...\n");
+    rt_kprintf("[Sensor] Init start...\n");
 
     ret = sht3x_init();
     if (ret != RT_EOK) {
-        rt_kprintf("[AutoInit] SHT3X init FAILED! (err=%d)\n", ret);
+        rt_kprintf("[Sensor] SHT3X init FAILED! (err=%d)\n", ret);
     } else {
-        rt_kprintf("[AutoInit] SHT3X OK\n");
+        rt_kprintf("[Sensor] SHT3X OK\n");
     }
 
+    /* BNO055 接 UART3(PB10/PB11)，不再与 FinSH 控制台(UART1)冲突 */
     ret = bn0055_init();
     if (ret != RT_EOK) {
-        rt_kprintf("[AutoInit] BNO055 init FAILED! (err=%d)\n", ret);
+        rt_kprintf("[Sensor] BNO055 init FAILED! (err=%d)\n", ret);
     } else {
-        rt_kprintf("[AutoInit] BNO055 OK\n");
+        rt_kprintf("[Sensor] BNO055 OK\n");
     }
 
     g_sensor_ready = 1;
-    rt_kprintf("[AutoInit] Sensor init done. ready=%d\n", g_sensor_ready);
-
-    /* 启动实时打印线程（每秒输出传感器数据） */
-    sensor_monitor_start();
-
-    return 0;
+    rt_kprintf("[Sensor] Init done.\n");
 }
-INIT_APP_EXPORT(sensor_auto_init);
 
 /* ================================================================
  * 实时监控线程（上电自动启动，每秒打印，不阻塞终端）
@@ -171,40 +171,57 @@ static int g_monitor_running = 0;
 static void sensor_monitor_entry(void *parameter)
 {
     int count = 0;
+    int dtu_ready = 0;
 
     rt_kprintf("\n");
     rt_kprintf("==================================================\n");
     rt_kprintf("  Sensor Monitor Started (1s interval)\n");
-    rt_kprintf("  Type 'sensor_monitor_stop' to stop\n");
+    rt_kprintf("  DTU: sending env data every 5s\n");
     rt_kprintf("==================================================\n\n");
+
+    /* 初始化 DTU */
+    if (dtu_sender_init() == RT_EOK) {
+        dtu_ready = 1;
+        dtu_send_boot();  /* 发送上电消息 */
+    } else {
+        rt_kprintf("[Monitor] DTU init FAILED, data will not be sent\n");
+    }
 
     while (g_monitor_running) {
         count++;
         rt_kprintf("---- [%d] ----\n", count);
 
         if (sht3x_read(&sht3x_data) == RT_EOK) {
-            rt_kprintf("  [SHT3X] Temp: %.2f C  |  Humi: %.2f %%RH\n",
-                       (double)sht3x_data.temperature,
-                       (double)sht3x_data.humidity);
+            rt_kprintf("  [SHT3X] Temp: %d.%02d C  |  Humi: %d.%02d %%RH\n",
+                       (int)sht3x_data.temperature,
+                       (int)((sht3x_data.temperature - (int)sht3x_data.temperature) * 100),
+                       (int)sht3x_data.humidity,
+                       (int)((sht3x_data.humidity - (int)sht3x_data.humidity) * 100));
+
+            /* 每 5 秒通过 DTU 发送一次温湿度 */
+            if (dtu_ready && (count % 5 == 0)) {
+                dtu_send_env(sht3x_data.temperature, sht3x_data.humidity);
+            }
         } else {
             rt_kprintf("  [SHT3X] Read FAILED\n");
         }
 
+        /* 读取 BNO055 */
         if (bn0055_read(&bn0055_data) == RT_EOK) {
-            rt_kprintf("  [BNO055] Accel X: %+.2f  Y: %+.2f  Z: %+.2f m/s^2\n",
-                       (double)bn0055_data.accel_x,
-                       (double)bn0055_data.accel_y,
-                       (double)bn0055_data.accel_z);
-            rt_kprintf("  [BNO055] Gyro  X: %+.2f  Y: %+.2f  Z: %+.2f deg/s\n",
-                       (double)bn0055_data.gyro_x,
-                       (double)bn0055_data.gyro_y,
-                       (double)bn0055_data.gyro_z);
-            rt_kprintf("  [BNO055] Euler H: %+.1f  R: %+.1f  P: %+.1f deg\n",
-                       (double)bn0055_data.euler_heading,
-                       (double)bn0055_data.euler_roll,
-                       (double)bn0055_data.euler_pitch);
+            rt_kprintf("  [BN0055] Acc: %d.%02d,%d.%02d,%d.%02d (m/s^2)\n",
+                       (int)bn0055_data.accel_x,
+                       (int)((bn0055_data.accel_x - (int)bn0055_data.accel_x) * 100),
+                       (int)bn0055_data.accel_y,
+                       (int)((bn0055_data.accel_y - (int)bn0055_data.accel_y) * 100),
+                       (int)bn0055_data.accel_z,
+                       (int)((bn0055_data.accel_z - (int)bn0055_data.accel_z) * 100));
         } else {
-            rt_kprintf("  [BNO055] Read FAILED\n");
+            rt_kprintf("  [BN0055] Read FAILED\n");
+        }
+
+        /* 每 10 秒发送一次心跳 */
+        if (dtu_ready && (count % 10 == 0)) {
+            dtu_send_heartbeat();
         }
 
         rt_thread_mdelay(1000);
@@ -216,7 +233,7 @@ static void sensor_monitor_entry(void *parameter)
 /**
  * @brief 启动实时监控线程
  */
-static void sensor_monitor_start(void)
+void sensor_monitor_start(void)
 {
     if (g_monitor_running) {
         rt_kprintf("[Monitor] Already running\n");

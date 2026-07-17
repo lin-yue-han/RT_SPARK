@@ -1,13 +1,19 @@
 /*
  * dtu_sender.h - 4G DTU 数据发送模块接口
  *
- * 通过 UART2 (PA2-TX, PA3-RX) 向 银尔达 Air780E DTU 发送结构化 JSON 数据。
- * DTU 配置为 TCP Client 透传模式，数据直接透传到远端 TCP Server。
+ * 通过 UART2 (PA2-TX, PA3-RX) 向 银尔达 Core-Y100M DTU 发送结构化 JSON 数据。
+ *
+ * DTU 配置说明：
+ *   DTU 使用银尔达私有透传固件（非标准 AT），TCP 配置通过串口工具一次性写入：
+ *     config,set,tcp,1,ttluart,0,0,,0,frp-oil.com,32762,0,,0,,0,0,0,0,0
+ *     config,set,save
+ *     config,set,reboot
+ *   配置后 DTU 上电自动连接 frp-oil.com:32762，STM32 只需发送纯 JSON 数据即可透传。
  *
  * 协议格式：每行一条 JSON，以 \n 结尾
  *
  * 使用方式：
- *   dtu_sender_init()              — 初始化 UART2 设备
+ *   dtu_sender_init()              — 初始化 UART2（只写模式）
  *   dtu_send_galloping(feat)       — 发送舞动检测特征
  *   dtu_send_env(temp, hum)        — 发送温湿度数据
  *   dtu_send_motor(state, pos)     — 发送电机状态

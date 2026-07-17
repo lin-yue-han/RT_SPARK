@@ -222,7 +222,8 @@ int bn0055_set_mode(uint8_t mode)
 
 /**
  * @brief 初始化 GY-BN0055（UART1，115200，PA9/PA10）
- *        BNO055 独占 UART1，FinSH 控制台已迁移至 UART3 避免冲突
+ *        BNO055 独占 UART1(PA9/PA10)，不使用 FinSH 控制台
+ *        数据通过 4G 模块(UART2) 发送到网页展示
  */
 int bn0055_init(void)
 {

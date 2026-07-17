@@ -403,4 +403,5 @@ static int galloping_auto_start(void)
     rt_kprintf("[AutoInit] Galloping detection + DTU reporting started\n");
     return 0;
 }
-INIT_APP_EXPORT(galloping_auto_start);
+/* 暂时注释掉自动启动，避免 BNO055 未初始化时疯狂报错 */
+/* INIT_APP_EXPORT(galloping_auto_start); */

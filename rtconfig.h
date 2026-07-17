@@ -48,7 +48,8 @@
 #define RT_USING_DEVICE
 #define RT_USING_CONSOLE
 #define RT_CONSOLEBUF_SIZE 256
-#define RT_CONSOLE_DEVICE_NAME "uart3"
+/* 透传桥接模式：控制台在 UART1(PA9/PA10)，通过 SSCOM 发送 DTU 配置命令 */
+#define RT_CONSOLE_DEVICE_NAME "uart1"
 /* end of Kernel Device Object */
 #define RT_VER_NUM 0x40100
 /* end of RT-Thread Kernel */

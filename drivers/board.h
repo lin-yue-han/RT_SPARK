@@ -67,18 +67,19 @@ extern "C"
  *
  */
 
-/* UART1：BNO055 接 PA9(TX)/PA10(RX)（对齐原理图） */
+/* UART1：FinSH 调试控制台 接 PA9(TX)/PA10(RX)
+ * ST-Link 虚拟串口连 UART1，通过 USB 线直接在电脑端查看终端 */
 #define BSP_USING_UART1
 #define BSP_UART1_TX_PIN       "PA9"
 #define BSP_UART1_RX_PIN       "PA10"
 
-/* UART2：4G/ESP32-C3 接 PA2(TX)/PA3(RX)（对齐原理图，替代原 UART4） */
+/* UART2：4G/ESP32-C3 接 PA2(TX)/PA3(RX) */
 #define BSP_USING_UART2
 #define BSP_UART2_TX_PIN       "PA2"
 #define BSP_UART2_RX_PIN       "PA3"
 
-/* UART3：FinSH 调试控制台 接 PB10(TX)/PB11(RX)
- * BNO055 独占 UART1，控制台迁移到 UART3 避免串口冲突 */
+/* UART3：BNO055 传感器 接 PB10(TX)/PB11(RX)
+ * BNO055 从 UART1 迁移到 UART3，腾出 UART1 给 ST-Link 虚拟串口 */
 #define BSP_USING_UART3
 #define BSP_UART3_TX_PIN       "PB10"
 #define BSP_UART3_RX_PIN       "PB11"

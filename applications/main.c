@@ -1,160 +1,168 @@
 /*
- * main.c - 电机控制与加热片控制入口
+ * main.c - DTU 桥接固件 v3（简化版：固定 115200，打印原始 hex）
  *
- * 引脚说明（在 board.h 中已配置）：
- *   左电机：PA0 (AIN1), PA1 (AIN2)
- *   右电机：PB15 (BIN1), PB14 (BIN2)
- *   软件I2C：SCL→PD10, SDA→PD8  (已在 board.h 中配置)
- *   UART1：TX→PA9, RX→PA10       (BNO055 独占，已在 board.h 中配置)
- *   UART2：TX→PA2, RX→PA3        (4G Core-Y100M，已在 board.h 中配置)
- *   UART3：TX→PB10, RX→PB11      (FinSH 控制台，已在 board.h 中配置)
- *   加热片继电器：PA8 (HEATER_CTRL) → 继电器IN（高电平触发）
+ * 硬件：
+ *   UART1 (PA9/PA10) → ST-Link COM9（控制台）
+ *   UART2 (PA2/PA3)   → DTU 模块
  *
- * 说明：机器车挂载于电缆上，仅支持前进/后退/停止，
- * 不具备转弯能力。上电后待机，检测到覆冰概率超过
- * 阈值时自动前进开始除冰作业。
+ * 功能：
+ *   - 上电后 DTU UART2 固定 115200
+ *   - DTU 收到的一切数据以 hex 形式打印（可看到乱码的真实字节）
+ *   - dtu_send 命令发数据
  */
+
 #include <rtthread.h>
 #include <rtdevice.h>
 #include <board.h>
-#include "dtu_sender.h"
+#include <string.h>
 
-/* 左电机引脚 */
-#define LEFT_AIN1   GET_PIN(A, 0)   /* PA0 */
-#define LEFT_AIN2   GET_PIN(A, 1)   /* PA1 */
+#define DTU_UART_NAME   "uart2"
+#define BUF_SIZE        256
 
-/* 右电机引脚 */
-#define RIGHT_BIN1  GET_PIN(B, 15)  /* PB15 */
-#define RIGHT_BIN2  GET_PIN(B, 14)  /* PB14 */
+static rt_device_t g_dtu_uart = RT_NULL;
 
-/* 加热片继电器引脚：PA8 → HEATER_CTRL → 继电器IN
- * 继电器模块 VCC 接 5V (RELAY_5V)，GND 接地
- * 默认高电平触发：PA8=高 → 继电器闭合 → 加热片通电 */
-#define HEATER_CTRL_PIN  GET_PIN(A, 8)   /* PA8 */
+/* ================================================================
+ * DTU 接收线程 —— 十六进制打印，不丢失任何信息
+ * ================================================================ */
 
-/* 触发电平定义：高电平触发时 ON=HIGH, OFF=LOW
- * 若实物为低电平触发，交换这两行即可 */
-#define RELAY_ON_LEVEL   PIN_HIGH
-#define RELAY_OFF_LEVEL  PIN_LOW
-
-/* 初始化加热片继电器 */
-static void heater_relay_init(void)
+static void dtu_recv_thread_entry(void *parameter)
 {
-    rt_pin_mode(HEATER_CTRL_PIN, PIN_MODE_OUTPUT);
+    unsigned char buf[BUF_SIZE];
 
-    /* 上电默认关闭加热，必须先写关闭状态 */
-    rt_pin_write(HEATER_CTRL_PIN, RELAY_OFF_LEVEL);
+    rt_kprintf("[Bridge] DTU recv started @ 115200 (hex dump mode)\n");
 
-    rt_kprintf("Heater relay initialized on PA8: OFF\n");
-}
-
-/* 开启加热 */
-static void heater_on(void)
-{
-    rt_pin_write(HEATER_CTRL_PIN, RELAY_ON_LEVEL);
-    rt_kprintf("Heater ON (PA8=%s)\n", RELAY_ON_LEVEL == PIN_HIGH ? "HIGH" : "LOW");
-}
-MSH_CMD_EXPORT(heater_on, turn heater relay on);
-
-/* 关闭加热 */
-static void heater_off(void)
-{
-    rt_pin_write(HEATER_CTRL_PIN, RELAY_OFF_LEVEL);
-    rt_kprintf("Heater OFF (PA8=%s)\n", RELAY_OFF_LEVEL == PIN_LOW ? "LOW" : "HIGH");
-}
-MSH_CMD_EXPORT(heater_off, turn heater relay off);
-
-/* 初始化电机引脚（只需调用一次） */
-static void motor_init(void)
-{
-    rt_pin_mode(LEFT_AIN1, PIN_MODE_OUTPUT);
-    rt_pin_mode(LEFT_AIN2, PIN_MODE_OUTPUT);
-    rt_pin_mode(RIGHT_BIN1, PIN_MODE_OUTPUT);
-    rt_pin_mode(RIGHT_BIN2, PIN_MODE_OUTPUT);
-
-    /* 初始停止 */
-    rt_pin_write(LEFT_AIN1, PIN_LOW);
-    rt_pin_write(LEFT_AIN2, PIN_LOW);
-    rt_pin_write(RIGHT_BIN1, PIN_LOW);
-    rt_pin_write(RIGHT_BIN2, PIN_LOW);
-
-    rt_kprintf("Motor pins initialized\n");
-}
-
-/* 左电机控制（speed > 0：正转；speed < 0：反转；speed == 0：停止） */
-static void left_motor(int speed)
-{
-    if (speed > 0) {
-        rt_pin_write(LEFT_AIN1, PIN_HIGH);
-        rt_pin_write(LEFT_AIN2, PIN_LOW);
-    } else if (speed < 0) {
-        rt_pin_write(LEFT_AIN1, PIN_LOW);
-        rt_pin_write(LEFT_AIN2, PIN_HIGH);
-    } else {
-        rt_pin_write(LEFT_AIN1, PIN_LOW);
-        rt_pin_write(LEFT_AIN2, PIN_LOW);
+    while (1)
+    {
+        int len = rt_device_read(g_dtu_uart, 0, buf, sizeof(buf));
+        if (len > 0) {
+            rt_kprintf("[DTU-HEX] len=%d: ", len);
+            for (int i = 0; i < len; i++) {
+                rt_kprintf("%02X ", buf[i]);
+            }
+            rt_kprintf("| ");
+            for (int i = 0; i < len; i++) {
+                unsigned char c = buf[i];
+                if (c >= 32 && c < 127) rt_kprintf("%c", c);
+                else rt_kprintf(".");
+            }
+            rt_kprintf("\n");
+        }
+        rt_thread_mdelay(50);
     }
 }
 
-/* 右电机控制（speed > 0：正转；speed < 0：反转；speed == 0：停止） */
-static void right_motor(int speed)
+/* ================================================================
+ * MSH: dtu_send
+ * ================================================================ */
+
+static void dtu_send(int argc, char **argv)
 {
-    if (speed > 0) {
-        rt_pin_write(RIGHT_BIN1, PIN_HIGH);
-        rt_pin_write(RIGHT_BIN2, PIN_LOW);
-    } else if (speed < 0) {
-        rt_pin_write(RIGHT_BIN1, PIN_LOW);
-        rt_pin_write(RIGHT_BIN2, PIN_HIGH);
-    } else {
-        rt_pin_write(RIGHT_BIN1, PIN_LOW);
-        rt_pin_write(RIGHT_BIN2, PIN_LOW);
+    if (g_dtu_uart == RT_NULL) {
+        rt_kprintf("[DTU] ERROR: UART2 not ready!\n");
+        return;
     }
-}
+    if (argc < 2) {
+        rt_kprintf("Usage: dtu_send <data>\n");
+        return;
+    }
 
-/* ========== 运动命令（电缆上仅前进/后退/停止） ========== */
-static void forward(void)
-{
-    left_motor(100);
-    right_motor(100);
-    rt_kprintf("Forward\n");
-}
-MSH_CMD_EXPORT(forward, go forward);
+    char buf[BUF_SIZE];
+    int pos = 0;
+    for (int i = 1; i < argc; i++) {
+        int alen = rt_strlen(argv[i]);
+        if (pos + alen + 2 > (int)sizeof(buf)) break;
+        if (i > 1) buf[pos++] = ' ';
+        rt_memcpy(buf + pos, argv[i], alen);
+        pos += alen;
+    }
+    buf[pos++] = '\r';
+    buf[pos++] = '\n';
+    buf[pos] = '\0';
 
-static void backward(void)
-{
-    left_motor(-100);
-    right_motor(-100);
-    rt_kprintf("Backward\n");
-}
-MSH_CMD_EXPORT(backward, go backward);
+    rt_kprintf("[SEND-HEX] ");
+    for (int i = 0; i < pos; i++) rt_kprintf("%02X ", (unsigned char)buf[i]);
+    rt_kprintf("| %s", buf);
 
-static void stop(void)
-{
-    left_motor(0);
-    right_motor(0);
-    rt_kprintf("Stop\n");
+    int ret = rt_device_write(g_dtu_uart, 0, buf, pos);
+    if (ret < 0) rt_kprintf("[DTU] ERROR: send failed\n");
 }
-MSH_CMD_EXPORT(stop, stop);
+MSH_CMD_EXPORT(dtu_send, send data to DTU via UART2);
+
+/* ================================================================
+ * MSH: dtu_raw —— 发送原始十六进制字节
+ * ================================================================ */
+
+static void dtu_raw(int argc, char **argv)
+{
+    if (g_dtu_uart == RT_NULL) {
+        rt_kprintf("[DTU] ERROR: UART2 not ready!\n");
+        return;
+    }
+    if (argc < 2) {
+        rt_kprintf("Usage: dtu_raw <hex bytes>\n");
+        rt_kprintf("Example: dtu_raw 41 54 0D 0A   (sends AT\\r\\n)\n");
+        return;
+    }
+
+    unsigned char buf[BUF_SIZE];
+    int len = 0;
+    for (int i = 1; i < argc && len < (int)sizeof(buf); i++) {
+        unsigned int byte;
+        if (sscanf(argv[i], "%x", &byte) == 1) {
+            buf[len++] = (unsigned char)byte;
+        }
+    }
+
+    rt_kprintf("[SEND-RAW] %d bytes: ", len);
+    for (int i = 0; i < len; i++) rt_kprintf("%02X ", buf[i]);
+    rt_kprintf("\n");
+
+    rt_device_write(g_dtu_uart, 0, buf, len);
+}
+MSH_CMD_EXPORT(dtu_raw, send raw hex bytes to DTU);
+
+/* ================================================================
+ * 初始化
+ * ================================================================ */
+
+static int bridge_init(void)
+{
+    rt_thread_t thread;
+
+    g_dtu_uart = rt_device_find(DTU_UART_NAME);
+    if (g_dtu_uart == RT_NULL) {
+        rt_kprintf("[Bridge] ERROR: '%s' not found!\n", DTU_UART_NAME);
+        return -RT_ERROR;
+    }
+
+    if (rt_device_open(g_dtu_uart, RT_DEVICE_OFLAG_RDWR) != RT_EOK) {
+        rt_kprintf("[Bridge] ERROR: failed to open '%s'!\n", DTU_UART_NAME);
+        g_dtu_uart = RT_NULL;
+        return -RT_ERROR;
+    }
+
+    struct serial_configure cfg = RT_SERIAL_CONFIG_DEFAULT;
+    cfg.baud_rate = 115200;
+    cfg.data_bits = DATA_BITS_8;
+    cfg.stop_bits = STOP_BITS_1;
+    cfg.parity    = PARITY_NONE;
+    rt_device_control(g_dtu_uart, RT_DEVICE_CTRL_CONFIG, &cfg);
+
+    rt_kprintf("[Bridge] UART2 opened @ 115200\n");
+
+    thread = rt_thread_create("dtu_recv", dtu_recv_thread_entry, RT_NULL, 2048, 12, 10);
+    if (thread) rt_thread_startup(thread);
+
+    return RT_EOK;
+}
 
 int main(void)
 {
-    /* ===== 第1步：尽早初始化 DTU（上电立即发送系统启动消息） ===== */
-    if (dtu_sender_init() == RT_EOK) {
-        rt_kprintf("[Main] DTU initialized, sending boot message...\n");
-        /* 立即发送启动消息，证明通信链路畅通 */
-        dtu_send_boot();
-    } else {
-        rt_kprintf("[Main] WARNING: DTU init failed\n");
-    }
+    rt_kprintf("\n");
+    rt_kprintf("================================================\n");
+    rt_kprintf("  RT_SPARK - DTU Bridge v3 (Hex Dump)\n");
+    rt_kprintf("================================================\n\n");
 
-    /* 系统启动时初始化电机引脚 */
-    motor_init();
-
-    /* 初始化加热片继电器（上电默认关闭） */
-    heater_relay_init();
-
-    /* 上电后待机，等待覆冰检测触发自动除冰 */
-    rt_kprintf("System ready. Standby for de-icing trigger.\n");
-    rt_kprintf("Commands: forward, backward, stop, heater_on, heater_off\n");
+    bridge_init();
     return 0;
 }

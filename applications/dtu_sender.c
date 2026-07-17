@@ -1,10 +1,24 @@
 /*
  * dtu_sender.c - 4G DTU 数据发送模块实现
  *
- * 通过 RT-Thread 的 UART 设备框架向 DTU 模块发送 JSON 行数据。
+ * 通过 RT-Thread 的 UART 设备框架向银尔达 Core-Y100M DTU 模块发送 JSON 行数据。
+ *
+ * 硬件连接：STM32 UART2 (PA2-TX, PA3-RX) → 银尔达 DTU 串口
+ * DTU 固件：银尔达 DTU 透传固件（私有 config,set,tcp 命令，非标准 AT）
+ *
+ * 重要说明：
+ *   DTU 的 TCP 配置是一次性的 —— 用 USB-TTL 串口工具发送以下命令后，
+ *   DTU 上电即自动连接 frp-oil.com:32762，无需 STM32 参与配置：
+ *
+ *     config,set,tcp,1,ttluart,0,0,,0,frp-oil.com,32762,0,,0,,0,0,0,0,0
+ *     config,set,save
+ *     config,set,reboot
+ *
+ *   STM32 只需通过 UART2 发送纯 JSON 行数据（\n 结尾），
+ *   DTU 会自动透传到远端 TCP Server。
  *
  * 设计要点：
- *   1. 使用 rt_device_write() 直接发送，非阻塞模式
+ *   1. 使用 rt_device_write() 直接发送，只写模式（不需要读取 DTU 返回）
  *   2. 每行一条 JSON，\n 结尾，方便接收端按行解析
  *   3. 使用 rt_snprintf 构造 JSON，避免动态内存分配
  *   4. 所有浮点数保留足够精度（%.3f/%.1f），减少冗余
@@ -14,6 +28,7 @@
 #include "dtu_sender.h"
 #include <rtdevice.h>
 #include <stdio.h>
+#include <string.h>
 
 /* 最大单条 JSON 长度 */
 #define DTU_JSON_BUF_SIZE   512
@@ -37,14 +52,18 @@ int dtu_sender_init(void)
         return -RT_ERROR;
     }
 
-    /* 打开设备：只写模式 + 中断发送 */
+    /*
+     * 只写模式：
+     * DTU 透传固件自动管理 TCP 连接/重连/心跳，
+     * STM32 不需要读取 DTU 的返回数据。
+     */
     if (rt_device_open(g_dtu_uart, RT_DEVICE_OFLAG_WRONLY) != RT_EOK) {
         rt_kprintf("[DTU] ERROR: failed to open '%s'!\n", DTU_UART_NAME);
         g_dtu_uart = RT_NULL;
         return -RT_ERROR;
     }
 
-    /* 配置波特率 */
+    /* 配置波特率（需与 DTU 固件中 ttluart 波特率一致） */
     struct serial_configure cfg = RT_SERIAL_CONFIG_DEFAULT;
     cfg.baud_rate = DTU_BAUD_RATE;
     cfg.data_bits = DATA_BITS_8;
@@ -52,8 +71,10 @@ int dtu_sender_init(void)
     cfg.parity    = PARITY_NONE;
     rt_device_control(g_dtu_uart, RT_DEVICE_CTRL_CONFIG, &cfg);
 
-    rt_kprintf("[DTU] Initialized on %s @ %d baud\n", DTU_UART_NAME, DTU_BAUD_RATE);
+    rt_kprintf("[DTU] Initialized on %s @ %d baud (transparent mode, write-only)\n",
+               DTU_UART_NAME, DTU_BAUD_RATE);
 
+    /* DTU 配置已通过串口工具一次性写入，上电自动连接，无需额外配置 */
     return RT_EOK;
 }
 
