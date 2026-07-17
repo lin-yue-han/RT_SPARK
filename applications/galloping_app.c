@@ -140,7 +140,7 @@ static void galloping_thread_entry(void *parameter)
  * @brief 启动舞动检测
  *        msh: galloping_start
  */
-static void galloping_start(void)
+void galloping_start(void)
 {
     rt_thread_t thread;
 
@@ -294,7 +294,7 @@ static void dtu_report_thread_entry(void *parameter)
  * @brief 启动 DTU 定时上报
  *        msh: dtu_report_start
  */
-static void dtu_report_start(void)
+void dtu_report_start(void)
 {
     rt_thread_t thread;
 

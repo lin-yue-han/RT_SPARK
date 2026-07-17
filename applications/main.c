@@ -1,212 +1,175 @@
 /*
- * main.c - RT_SPARK 精确波特率扫描固件 v6
+ * main.c - RT_SPARK 主入口（RNDIS 双串口架构）
  *
- * 模块在 115200 下回声第一个字符，说明波特率接近但不精确。
- * 此固件扫描 115200 附近的多个波特率，找到能收到完整 "OK" 的正确值。
+ * 引脚说明（在 board.h 中已配置）：
+ *   左电机：PA0 (AIN1), PA1 (AIN2)
+ *   右电机：PB15 (BIN1), PB14 (BIN2)
+ *   软件I2C：SCL→PD10, SDA→PD8  (已在 board.h 中配置)
+ *   UART1：TX→PA9, RX→PA10       (ST-Link 虚拟串口 / BNO055 共享)
+ *   UART2：TX→PA2, RX→PA3        (4G 模块 Core-Y100P，硬件 UART 不通)
+ *   加热片继电器：PA8 (HEATER_CTRL) → 继电器IN（高电平触发）
+ *
+ * 数据流：
+ *   BNO055/SHT3X → STM32 → 控制台 UART1 → ST-Link VCP (COM9) →
+ *   bridge.js (COM9 读取) → TCP 客户端 → frp-oil.com:32762 → 网页
+ *
+ * 说明：
+ *   关闭 FinSH/MSH，UART1 的 RX 留给 BNO055 读取。
+ *   控制台输出（UART1 TX）用于输出 JSON 数据到 ST-Link VCP。
+ *   4G 模块的硬件 UART 不通，改为 USB 直连电脑，由 bridge.js 转发数据。
  */
-
 #include <rtthread.h>
 #include <rtdevice.h>
-#include <string.h>
-#include <stdio.h>
+#include <board.h>
+#include "dtu_sender.h"
 
-#define UART2_NAME      "uart2"
-#define BUF_SIZE        64
+/* 外部函数声明 */
+extern void sensor_init_all(void);
+extern void sensor_monitor_start(void);
+extern void galloping_start(void);
+extern void dtu_report_start(void);
 
-static rt_device_t g_uart2 = RT_NULL;
+/* 左电机引脚 */
+#define LEFT_AIN1   GET_PIN(A, 0)   /* PA0 */
+#define LEFT_AIN2   GET_PIN(A, 1)   /* PA1 */
 
-static void bridge_print(const char *fmt, ...)
+/* 右电机引脚 */
+#define RIGHT_BIN1  GET_PIN(B, 15)  /* PB15 */
+#define RIGHT_BIN2  GET_PIN(B, 14)  /* PB14 */
+
+/* 加热片继电器引脚：PA8 → HEATER_CTRL → 继电器IN
+ * 继电器模块 VCC 接 5V (RELAY_5V)，GND 接地
+ * 默认高电平触发：PA8=高 → 继电器闭合 → 加热片通电 */
+#define HEATER_CTRL_PIN  GET_PIN(A, 8)   /* PA8 */
+
+/* 触发电平定义：高电平触发时 ON=HIGH, OFF=LOW
+ * 若实物为低电平触发，交换这两行即可 */
+#define RELAY_ON_LEVEL   PIN_HIGH
+#define RELAY_OFF_LEVEL  PIN_LOW
+
+/* 初始化加热片继电器 */
+static void heater_relay_init(void)
 {
-    char buf[256];
-    va_list args;
-    va_start(args, fmt);
-    rt_vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-    rt_device_t console = rt_console_get_device();
-    if (console) rt_device_write(console, 0, buf, rt_strlen(buf));
+    rt_pin_mode(HEATER_CTRL_PIN, PIN_MODE_OUTPUT);
+    rt_pin_write(HEATER_CTRL_PIN, RELAY_OFF_LEVEL);
+    rt_kprintf("Heater relay initialized on PA8: OFF\n");
 }
 
-static void uart2_set_baud(int baud)
+/* 开启加热 */
+static void heater_on(void)
 {
-    struct serial_configure cfg = RT_SERIAL_CONFIG_DEFAULT;
-    cfg.baud_rate = baud;
-    cfg.data_bits = DATA_BITS_8;
-    cfg.stop_bits = STOP_BITS_1;
-    cfg.parity    = PARITY_NONE;
-    rt_device_control(g_uart2, RT_DEVICE_CTRL_CONFIG, &cfg);
+    rt_pin_write(HEATER_CTRL_PIN, RELAY_ON_LEVEL);
+    rt_kprintf("Heater ON (PA8=%s)\n", RELAY_ON_LEVEL == PIN_HIGH ? "HIGH" : "LOW");
+}
+MSH_CMD_EXPORT(heater_on, turn heater relay on);
+
+/* 关闭加热 */
+static void heater_off(void)
+{
+    rt_pin_write(HEATER_CTRL_PIN, RELAY_OFF_LEVEL);
+    rt_kprintf("Heater OFF (PA8=%s)\n", RELAY_OFF_LEVEL == PIN_LOW ? "LOW" : "HIGH");
+}
+MSH_CMD_EXPORT(heater_off, turn heater relay off);
+
+/* 初始化电机引脚（只需调用一次） */
+static void motor_init(void)
+{
+    rt_pin_mode(LEFT_AIN1, PIN_MODE_OUTPUT);
+    rt_pin_mode(LEFT_AIN2, PIN_MODE_OUTPUT);
+    rt_pin_mode(RIGHT_BIN1, PIN_MODE_OUTPUT);
+    rt_pin_mode(RIGHT_BIN2, PIN_MODE_OUTPUT);
+
+    rt_pin_write(LEFT_AIN1, PIN_LOW);
+    rt_pin_write(LEFT_AIN2, PIN_LOW);
+    rt_pin_write(RIGHT_BIN1, PIN_LOW);
+    rt_pin_write(RIGHT_BIN2, PIN_LOW);
+
+    rt_kprintf("Motor pins initialized\n");
 }
 
-static void uart2_send_str(const char *str)
+/* 左电机控制（speed > 0：正转；speed < 0：反转；speed == 0：停止） */
+static void left_motor(int speed)
 {
-    if (g_uart2) rt_device_write(g_uart2, 0, str, rt_strlen(str));
-}
-
-static void flush_uart2(void)
-{
-    rt_uint8_t ch;
-    while (rt_device_read(g_uart2, 0, &ch, 1) == 1) {}
-}
-
-static int uart2_recv_wait(rt_uint8_t *buf, int max_len, int timeout_ms)
-{
-    rt_tick_t start = rt_tick_get();
-    rt_tick_t timeout_ticks = rt_tick_from_millisecond(timeout_ms);
-    int idx = 0;
-
-    while ((rt_tick_get() - start) < timeout_ticks) {
-        rt_uint8_t ch;
-        while (rt_device_read(g_uart2, 0, &ch, 1) == 1) {
-            if (idx < max_len) buf[idx++] = ch;
-        }
-        if (idx > 0) {
-            rt_thread_mdelay(100);  /* 等更多数据 */
-            while (rt_device_read(g_uart2, 0, &ch, 1) == 1) {
-                if (idx < max_len) buf[idx++] = ch;
-            }
-            return idx;
-        }
-        rt_thread_mdelay(50);
-    }
-    return 0;
-}
-
-/* ================================================================
- * 精确波特率扫描
- * ================================================================ */
-
-static void scan_baud(void)
-{
-    /* 扫描 115200 附近的多个波特率 */
-    int bauds[] = {
-        111000, 112000, 113000, 114000,
-        115000, 115200, 115384, 115789, 116000,
-        117000, 117647, 118000, 118919, 120000,
-        122000, 125000, 128000, 130000,
-        230400, 460800, 921600
-    };
-    int n = sizeof(bauds) / sizeof(bauds[0]);
-
-    bridge_print("\n===== 精确波特率扫描 =====\n");
-    bridge_print("扫描 %d 个波特率，找能收到完整 OK 的值...\n\n", n);
-
-    for (int i = 0; i < n; i++) {
-        uart2_set_baud(bauds[i]);
-        rt_thread_mdelay(200);
-        flush_uart2();
-
-        /* 发 5 次 AT\r\n */
-        for (int j = 0; j < 5; j++) {
-            uart2_send_str("AT\r\n");
-            rt_thread_mdelay(100);
-        }
-
-        rt_uint8_t rx[64];
-        int rx_len = uart2_recv_wait(rx, sizeof(rx), 1500);
-
-        if (rx_len > 0) {
-            bridge_print("baud=%d: rx_len=%d, ", bauds[i], rx_len);
-            for (int k = 0; k < rx_len; k++) {
-                bridge_print("%02X ", rx[k]);
-            }
-            bridge_print("| ");
-            for (int k = 0; k < rx_len; k++) {
-                if (rx[k] >= 32 && rx[k] < 127) {
-                    bridge_print("%c", rx[k]);
-                } else if (rx[k] == 0x0D) {
-                    bridge_print("\\r");
-                } else if (rx[k] == 0x0A) {
-                    bridge_print("\\n");
-                } else {
-                    bridge_print(".");
-                }
-            }
-            bridge_print("\n");
-
-            /* 检查是否包含 OK */
-            if (rx_len >= 2 && rx[0] == 'O' && rx[1] == 'K') {
-                bridge_print("*** FOUND! baud=%d 回复 OK ***\n", bauds[i]);
-            }
-        } else {
-            bridge_print("baud=%d: NO RESPONSE\n", bauds[i]);
-        }
+    if (speed > 0) {
+        rt_pin_write(LEFT_AIN1, PIN_HIGH);
+        rt_pin_write(LEFT_AIN2, PIN_LOW);
+    } else if (speed < 0) {
+        rt_pin_write(LEFT_AIN1, PIN_LOW);
+        rt_pin_write(LEFT_AIN2, PIN_HIGH);
+    } else {
+        rt_pin_write(LEFT_AIN1, PIN_LOW);
+        rt_pin_write(LEFT_AIN2, PIN_LOW);
     }
 }
 
-/* ================================================================
- * 发送时序测试
- * ================================================================ */
-
-static void timing_test(int baud)
+/* 右电机控制（speed > 0：正转；speed < 0：反转；speed == 0：停止） */
+static void right_motor(int speed)
 {
-    uart2_set_baud(baud);
-    rt_thread_mdelay(300);
-    flush_uart2();
-
-    bridge_print("\n===== 发送时序测试 @ %d =====\n", baud);
-
-    /* 测试不同发送间隔 */
-    int delays[] = {0, 10, 50, 100, 200, 500};
-    for (int i = 0; i < sizeof(delays)/sizeof(delays[0]); i++) {
-        flush_uart2();
-
-        uart2_send_str("AT");
-        rt_thread_mdelay(delays[i]);
-        uart2_send_str("\r\n");
-
-        rt_uint8_t rx[64];
-        int rx_len = uart2_recv_wait(rx, sizeof(rx), 1000);
-
-        if (rx_len > 0) {
-            bridge_print("delay=%dms: ", delays[i]);
-            for (int k = 0; k < rx_len; k++) {
-                bridge_print("%c", (rx[k] >= 32 && rx[k] < 127) ? rx[k] : '.');
-            }
-            bridge_print("\n");
-        } else {
-            bridge_print("delay=%dms: NO RESPONSE\n", delays[i]);
-        }
+    if (speed > 0) {
+        rt_pin_write(RIGHT_BIN1, PIN_HIGH);
+        rt_pin_write(RIGHT_BIN2, PIN_LOW);
+    } else if (speed < 0) {
+        rt_pin_write(RIGHT_BIN1, PIN_LOW);
+        rt_pin_write(RIGHT_BIN2, PIN_HIGH);
+    } else {
+        rt_pin_write(RIGHT_BIN1, PIN_LOW);
+        rt_pin_write(RIGHT_BIN2, PIN_LOW);
     }
 }
 
-/* ================================================================
- * 入口
- * ================================================================ */
-
-static void probe_thread(void *parameter)
+/* ========== 运动命令（电缆上仅前进/后退/停止） ========== */
+static void forward(void)
 {
-    (void)parameter;
-
-    rt_thread_mdelay(2000);
-    bridge_print("\n================================================\n");
-    bridge_print("  RT_SPARK - Baud Rate Scanner v6\n");
-    bridge_print("  精确波特率扫描\n");
-    bridge_print("================================================\n");
-
-    scan_baud();
-    timing_test(115200);
-    timing_test(117647);  /* 26MHz 晶振常见偏差值 */
-
-    bridge_print("\n================================================\n");
-    bridge_print("  扫描完成\n");
-    bridge_print("  如果找到 OK 回复，记下对应波特率\n");
-    bridge_print("================================================\n");
+    left_motor(100);
+    right_motor(100);
+    rt_kprintf("Forward\n");
 }
+MSH_CMD_EXPORT(forward, go forward);
+
+static void backward(void)
+{
+    left_motor(-100);
+    right_motor(-100);
+    rt_kprintf("Backward\n");
+}
+MSH_CMD_EXPORT(backward, go backward);
+
+static void stop(void)
+{
+    left_motor(0);
+    right_motor(0);
+    rt_kprintf("Stop\n");
+}
+MSH_CMD_EXPORT(stop, stop);
 
 int main(void)
 {
-    g_uart2 = rt_device_find(UART2_NAME);
-    if (g_uart2 == RT_NULL) {
-        bridge_print("[ERR] UART2 not found!\n");
-        return -1;
-    }
-    if (rt_device_open(g_uart2, RT_DEVICE_OFLAG_RDWR) != RT_EOK) {
-        bridge_print("[ERR] UART2 open failed!\n");
-        return -1;
-    }
+    /* ===== 第0步：最早打印，确认终端通路 ===== */
+    rt_kprintf("\n\n");
+    rt_kprintf("========================================\n");
+    rt_kprintf("   RT_SPARK Booting... (RNDIS Arch)\n");
+    rt_kprintf("========================================\n");
 
-    rt_thread_t t = rt_thread_create("probe", probe_thread, RT_NULL, 1024, 10, 10);
-    if (t) rt_thread_startup(t);
+    /* ===== 第1步：初始化电机和加热片 ===== */
+    motor_init();
+    heater_relay_init();
 
-    while (1) rt_thread_mdelay(5000);
+    /* ===== 第2步：初始化传感器 ===== */
+    sensor_init_all();
+
+    /* ===== 第3步：启动传感器实时监控 ===== */
+    sensor_monitor_start();
+
+    /* ===== 第4步：启动舞动检测和 DTU 上报 ===== */
+    rt_kprintf("[Main] Starting galloping detection...\n");
+    galloping_start();
+    dtu_report_start();
+
+    /* ===== 第5步：上电立即启动电机 ===== */
+    rt_kprintf("[Main] Starting motors...\n");
+    forward();
+
+    rt_kprintf("[Main] System running. Type 'stop' to stop motors.\n");
+
     return 0;
 }

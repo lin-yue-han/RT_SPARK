@@ -1,22 +1,24 @@
 /*
- * bridge.js - TCP -> WebSocket 桥接服务（零依赖，纯 Node.js 原生实现）
+ * bridge.js - RNDIS 双串口架构桥接服务（零依赖，纯 Node.js 原生实现）
  *
- * 功能：
- *   1. 启动 TCP Server (端口 8090)，接收 Air778E 4G 模块经 frp 转发来的 JSON 行数据
- *   2. 启动 WebSocket Server (端口 8080)，供网页连接
- *   3. TCP 收到的数据实时推送到所有 WS 客户端
- *   4. WS 客户端可发送命令，桥接脚本通过 TCP 转发给 STM32 (双向通信)
+ * 修改说明：
+ *   原方案等待 4G 模块通过 frp 转发连接本地 TCP 端口。
+ *   新方案：直接读取 STM32 的 ST-Link VCP（COM9），解析 JSON 数据，
+ *   通过 TCP 客户端连接到 frp 服务器，同时保持 WebSocket 服务器供本地调试。
  *
  * 数据流：
- *   STM32 --UART2--> Air778E --4G--> frp公网节点 --转发--> 本机TCP:8090 --bridge--> WS:8080 --> 网页
+ *   STM32 (BNO055/SHT3X) → 控制台 UART1 → ST-Link VCP (COM9) →
+ *   bridge.js (COM9 读取) → TCP 客户端 → frp-oil.com:32762 → 网页
  *
  * 用法：
  *   node bridge.js
- *   node bridge.js --tcp-port=9090 --ws-port=8080
+ *   node bridge.js --com-port=\\.\COM9 --tcp-host=frp-oil.com --tcp-port=32762 --ws-port=8080
  *
  * 零依赖：不使用 npm 包，WebSocket 用 Node.js 内置 http + crypto 手写实现
+ *         COM 口读取使用 Node.js 内置 fs 模块（Windows 下可直接访问 \\.\COMx）
  */
 
+const fs = require("fs");
 const net = require("net");
 const http = require("http");
 const crypto = require("crypto");
@@ -29,8 +31,10 @@ function getArg(name, defaultVal) {
   return found ? found.slice(flag.length) : defaultVal;
 }
 
-const TCP_PORT = parseInt(getArg("tcp-port", "8090"), 10);
-const WS_PORT  = parseInt(getArg("ws-port", "8080"), 10);
+const COM_PORT   = getArg("com-port", "\\\\.\\COM9");
+const TCP_HOST   = getArg("tcp-host", "frp-oil.com");
+const TCP_PORT   = parseInt(getArg("tcp-port", "32762"), 10);
+const WS_PORT    = parseInt(getArg("ws-port", "8080"), 10);
 
 // ---- WS 客户端连接池 ----
 const wsClients = new Set();
@@ -38,12 +42,17 @@ const wsClients = new Set();
 // ---- 活跃 TCP socket 集合 ----
 const activeSockets = new Set();
 
+// ---- TCP 客户端（连接到 frp 服务器）----
+let tcpClient = null;
+let tcpReconnectTimer = null;
+
 // ---- 统计信息 ----
 const stats = {
   tcpConnections: 0,
   wsConnections: 0,
   totalMessages: 0,
   bytesReceived: 0,
+  comLines: 0,
   startTime: Date.now(),
 };
 
@@ -69,7 +78,6 @@ function acceptWebSocketKey(key) {
   return crypto.createHash("sha1").update(key + magic).digest("base64");
 }
 
-// 对单个连接封装帧收发
 function createWSConnection(socket) {
   const ws = {
     socket: socket,
@@ -79,7 +87,7 @@ function createWSConnection(socket) {
       const data = Buffer.from(text, "utf8");
       const mask = data.length <= 125 ? 2 : (data.length <= 65535 ? 4 : 10);
       const frame = Buffer.allocUnsafe(mask + data.length);
-      frame[0] = 0x81; // FIN + opcode 1 (text)
+      frame[0] = 0x81;
       if (data.length <= 125) {
         frame[1] = data.length;
       } else if (data.length <= 65535) {
@@ -101,7 +109,6 @@ function createWSConnection(socket) {
   return ws;
 }
 
-// 解析 WebSocket 帧（处理分片和掩码）
 function parseWSFrame(buffer) {
   if (buffer.length < 2) return { consumed: 0, payload: null, opcode: null };
 
@@ -138,14 +145,16 @@ function parseWSFrame(buffer) {
 
 // HTTP + WebSocket 服务器
 const httpServer = http.createServer((req, res) => {
-  // 健康检查端点
   if (req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       status: "ok",
+      tcpConnected: tcpClient && tcpClient.writable,
+      comPort: COM_PORT,
       tcpConnections: stats.tcpConnections,
       wsConnections: stats.wsConnections,
       totalMessages: stats.totalMessages,
+      comLines: stats.comLines,
       uptime: Math.floor((Date.now() - stats.startTime) / 1000)
     }));
     return;
@@ -181,7 +190,6 @@ httpServer.on("upgrade", (req, socket, head) => {
   const clientIP = req.socket.remoteAddress;
   log("WS", `网页客户端连接 (${clientIP})  当前: ${stats.wsConnections}`);
 
-  // 发送欢迎信息
   ws.sendText(JSON.stringify({
     type: "system",
     event: "ws_connected",
@@ -190,7 +198,7 @@ httpServer.on("upgrade", (req, socket, head) => {
       uptime: Math.floor((Date.now() - stats.startTime) / 1000),
       totalMessages: stats.totalMessages,
       bytesReceived: stats.bytesReceived,
-      tcpConnected: stats.tcpConnections > 0,
+      tcpConnected: tcpClient && tcpClient.writable,
     },
     ts: Date.now(),
   }));
@@ -206,35 +214,26 @@ httpServer.on("upgrade", (req, socket, head) => {
 
       wsBuffer = wsBuffer.slice(result.consumed);
 
-      // opcode 8 = close
       if (result.opcode === 8) {
         ws.alive = false;
         return;
       }
 
-      // opcode 9 = ping, reply pong
       if (result.opcode === 9) {
         const pong = Buffer.allocUnsafe(2);
-        pong[0] = 0x8a; // FIN + pong
+        pong[0] = 0x8a;
         pong[1] = 0;
         try { socket.write(pong); } catch(e) {}
         continue;
       }
 
-      // opcode 1 = text message
       if (result.opcode === 1 && result.payload) {
         const cmd = result.payload.trim();
         if (cmd.length === 0) continue;
         log("CMD", `网页->STM32: ${cmd}`);
 
-        let sent = false;
-        for (const sock of activeSockets) {
-          if (sock.writable) {
-            sock.write(cmd + "\n");
-            sent = true;
-            break;
-          }
-        }
+        // 通过 COM 口转发给 STM32
+        let sent = writeComData(cmd + "\n");
 
         if (sent) {
           ws.sendText(JSON.stringify({
@@ -244,11 +243,11 @@ httpServer.on("upgrade", (req, socket, head) => {
             ts: Date.now(),
           }));
         } else {
-          log("CMD", `无法转发: 没有活跃的 Air778E 连接`);
+          log("CMD", `无法转发: COM 口未就绪`);
           ws.sendText(JSON.stringify({
             type: "system",
             event: "command_failed",
-            reason: "Air778E 未连接",
+            reason: "COM 口未就绪",
             command: cmd,
             ts: Date.now(),
           }));
@@ -283,117 +282,215 @@ httpServer.listen(WS_PORT, "0.0.0.0", () => {
 });
 
 // ================================================================
-// TCP Server — 接收 Air778E / frp 转发的数据
+// TCP 客户端 — 连接到 frp 服务器
 // ================================================================
-const tcpServer = net.createServer((socket) => {
-  stats.tcpConnections++;
-  activeSockets.add(socket);
-  const remoteAddr = `${socket.remoteAddress}:${socket.remotePort}`;
-  log("TCP", `Air778E 已连接 (${remoteAddr})  当前连接数: ${stats.tcpConnections}`);
+function connectTCP() {
+  if (tcpClient) {
+    tcpClient.destroy();
+    tcpClient = null;
+  }
 
-  broadcastText(JSON.stringify({
-    type: "system",
-    event: "device_connected",
-    remote: remoteAddr,
-    ts: Date.now(),
-  }));
+  log("TCP", `正在连接 ${TCP_HOST}:${TCP_PORT}...`);
 
-  let tcpBuffer = "";
+  tcpClient = net.createConnection({ host: TCP_HOST, port: TCP_PORT }, () => {
+    log("TCP", `已连接到 ${TCP_HOST}:${TCP_PORT}`);
+    stats.tcpConnections = 1;
 
-  socket.on("data", (chunk) => {
-    const text = chunk.toString("utf8");
-    stats.bytesReceived += chunk.length;
-    tcpBuffer += text;
-
-    let idx;
-    while ((idx = tcpBuffer.indexOf("\n")) !== -1) {
-      let line = tcpBuffer.slice(0, idx).trim();
-      tcpBuffer = tcpBuffer.slice(idx + 1);
-      if (line.length === 0) continue;
-      stats.totalMessages++;
-
-      let parsed = null;
-      try {
-        parsed = JSON.parse(line);
-      } catch (e) {
-        log("TCP", `非JSON: ${line.slice(0, 80)}`);
-        broadcastText(JSON.stringify({ type: "raw", data: line, ts: Date.now() }));
-        continue;
-      }
-
-      const msgType = parsed.type || "unknown";
-      switch (msgType) {
-        case "galloping":
-          log("DATA", `舞动: state=${parsed.state} amp=${parsed.amp_dominant} freq=${parsed.dominant_freq}Hz`);
-          break;
-        case "env":
-          log("DATA", `温湿度: ${parsed.temperature}C  ${parsed.humidity}%RH`);
-          break;
-        case "motor":
-          log("DATA", `电机: ${parsed.motor_state}  pos=${parsed.position}%`);
-          break;
-        case "heartbeat":
-          log("DATA", `心跳 #${stats.totalMessages}`);
-          break;
-        default:
-          log("DATA", `${msgType}: ${line.slice(0, 60)}`);
-      }
-
-      broadcastText(line); // 原始 JSON 行转发，网页端解析
-    }
-  });
-
-  socket.on("error", (err) => {
-    log("TCP", `连接错误: ${err.message}`);
-  });
-
-  socket.on("close", () => {
-    stats.tcpConnections--;
-    activeSockets.delete(socket);
-    log("TCP", `Air778E 断开  剩余连接: ${stats.tcpConnections}`);
     broadcastText(JSON.stringify({
       type: "system",
-      event: "device_disconnected",
+      event: "tcp_connected",
+      host: TCP_HOST,
+      port: TCP_PORT,
       ts: Date.now(),
     }));
   });
-});
 
-tcpServer.on("error", (err) => {
-  if (err.code === "EADDRINUSE") {
-    log("TCP", `端口 ${TCP_PORT} 被占用！请用 --tcp-port=xxxx 指定其他端口`);
-  } else {
-    log("TCP", `服务器错误: ${err.message}`);
+  tcpClient.on("data", (data) => {
+    const text = data.toString("utf8");
+    stats.bytesReceived += data.length;
+
+    // frp 服务器返回的数据，如果包含命令，转发给 STM32
+    let lines = text.split("\n");
+    for (let line of lines) {
+      line = line.trim();
+      if (line.length === 0) continue;
+
+        // 尝试解析为 JSON
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.command) {
+            log("TCP", `收到命令: ${parsed.command}`);
+            // 转发给 STM32
+            writeComData(parsed.command + "\n");
+          }
+        } catch (e) {
+          // 非 JSON，忽略
+        }
+    }
+  });
+
+  tcpClient.on("error", (err) => {
+    log("TCP", `连接错误: ${err.message}`);
+  });
+
+  tcpClient.on("close", () => {
+    log("TCP", "连接断开，5秒后重连...");
+    stats.tcpConnections = 0;
+    tcpClient = null;
+
+    broadcastText(JSON.stringify({
+      type: "system",
+      event: "tcp_disconnected",
+      ts: Date.now(),
+    }));
+
+    if (!tcpReconnectTimer) {
+      tcpReconnectTimer = setTimeout(() => {
+        tcpReconnectTimer = null;
+        connectTCP();
+      }, 5000);
+    }
+  });
+}
+
+connectTCP();
+
+// ================================================================
+// COM 口读写 — 读取 STM32 通过 ST-Link VCP 输出的 JSON 数据
+// ================================================================
+let comFd = null;
+let comBuffer = "";
+const COM_READ_BUF = Buffer.alloc(4096);
+
+function openComPort() {
+  if (comFd !== null) {
+    try { fs.closeSync(comFd); } catch (e) {}
+    comFd = null;
   }
-  process.exit(1);
-});
 
-tcpServer.listen(TCP_PORT, "0.0.0.0", () => {
-  log("TCP", `TCP Server 监听 0.0.0.0:${TCP_PORT}  (等待 Air778E / frp 连接)`);
-});
+  log("COM", `正在打开 ${COM_PORT}...`);
+
+  fs.open(COM_PORT, "r+", (err, fd) => {
+    if (err) {
+      log("COM", `打开失败: ${err.message}`);
+      setTimeout(openComPort, 3000);
+      return;
+    }
+    comFd = fd;
+    log("COM", `${COM_PORT} 已打开 (fd=${fd})`);
+    readComLoop();
+  });
+}
+
+function readComLoop() {
+  if (comFd === null) return;
+
+  fs.read(comFd, COM_READ_BUF, 0, COM_READ_BUF.length, null, (err, bytesRead) => {
+    if (err) {
+      log("COM", `读取错误: ${err.message}`);
+      try { fs.closeSync(comFd); } catch (e) {}
+      comFd = null;
+      setTimeout(openComPort, 3000);
+      return;
+    }
+
+    if (bytesRead > 0) {
+      comBuffer += COM_READ_BUF.slice(0, bytesRead).toString("utf8");
+      stats.bytesReceived += bytesRead;
+
+      // 处理按行分割的 JSON 数据
+      let idx;
+      while ((idx = comBuffer.indexOf("\n")) !== -1) {
+        let line = comBuffer.slice(0, idx).trim();
+        comBuffer = comBuffer.slice(idx + 1);
+        if (line.length === 0) continue;
+        stats.comLines++;
+
+        // 尝试解析为 JSON
+        let parsed = null;
+        try {
+          parsed = JSON.parse(line);
+        } catch (e) {
+          // 非 JSON 数据（如 rt_kprintf 输出），忽略
+          continue;
+        }
+
+        const msgType = parsed.type || "unknown";
+        stats.totalMessages++;
+
+        switch (msgType) {
+          case "galloping":
+            log("DATA", `舞动: state=${parsed.state} amp=${parsed.amp_dominant} freq=${parsed.dominant_freq}Hz`);
+            break;
+          case "env":
+            log("DATA", `温湿度: ${parsed.temperature}C  ${parsed.humidity}%RH`);
+            break;
+          case "motor":
+            log("DATA", `电机: ${parsed.motor_state}  pos=${parsed.position}%`);
+            break;
+          case "heartbeat":
+            log("DATA", `心跳 #${stats.totalMessages}`);
+            break;
+          case "boot":
+            log("DATA", `系统启动: ${parsed.msg}`);
+            break;
+          default:
+            log("DATA", `${msgType}: ${line.slice(0, 60)}`);
+        }
+
+        // 通过 TCP 发送到 frp 服务器
+        if (tcpClient && tcpClient.writable) {
+          try {
+            tcpClient.write(line + "\n");
+          } catch (e) {
+            log("TCP", `发送失败: ${e.message}`);
+          }
+        }
+
+        // 通过 WebSocket 广播（本地调试）
+        broadcastText(line);
+      }
+    }
+
+    // 50ms 后再次读取
+    setTimeout(readComLoop, 50);
+  });
+}
+
+function writeComData(data) {
+  if (comFd === null) return false;
+  const buf = Buffer.from(data, "utf8");
+  fs.write(comFd, buf, 0, buf.length, null, (err) => {
+    if (err) log("COM", `写入错误: ${err.message}`);
+  });
+  return true;
+}
+
+openComPort();
 
 // ---- 定时打印统计 ----
 setInterval(() => {
   const uptime = Math.floor((Date.now() - stats.startTime) / 1000);
   const min = Math.floor(uptime / 60);
   const sec = uptime % 60;
-  log("STAT", `运行 ${min}m${sec}s | TCP连接:${stats.tcpConnections} | WS网页:${stats.wsConnections} | 消息:${stats.totalMessages} | 字节:${stats.bytesReceived}`);
+  log("STAT", `运行 ${min}m${sec}s | TCP:${stats.tcpConnections ? 'OK' : 'DIS'} | WS:${stats.wsConnections} | 消息:${stats.totalMessages} | COM行:${stats.comLines}`);
 }, 30000);
 
 // ---- 优雅退出 ----
 process.on("SIGINT", () => {
   log("SYS", "正在关闭...");
   for (const ws of wsClients) ws.close();
-  for (const sock of activeSockets) sock.destroy();
-  tcpServer.close();
+  if (tcpClient) tcpClient.destroy();
+  if (comFd !== null) { try { fs.closeSync(comFd); } catch (e) {} comFd = null; }
   httpServer.close();
   setTimeout(() => process.exit(0), 500);
 });
 
 log("SYS", "==========================================");
-log("SYS", "  RT_SPARK Wireless Bridge 已启动");
-log("SYS", `  TCP:  等待 Air778E 连接  0.0.0.0:${TCP_PORT}`);
-log("SYS", `  WS:   网页连接  ws://localhost:${WS_PORT}`);
-log("SYS", `  HTTP: 健康检查  http://localhost:${WS_PORT}/health`);
+log("SYS", "  RT_SPARK RNDIS Bridge 已启动");
+log("SYS", `  COM:  STM32 数据输入  ${COM_PORT}`);
+log("SYS", `  TCP:  frp 服务器      ${TCP_HOST}:${TCP_PORT}`);
+log("SYS", `  WS:   本地调试        ws://localhost:${WS_PORT}`);
+log("SYS", `  HTTP: 健康检查        http://localhost:${WS_PORT}/health`);
 log("SYS", "  按 Ctrl+C 退出");
 log("SYS", "==========================================");
