@@ -15,12 +15,13 @@
 
 /* BNO055 使用 UART1(PA9/PA10)，RX 读取传感器数据，TX 留给控制台输出 JSON */
 #define UART_NAME       "uart1"
-#define UART_BAUDRATE   115200
+#define UART_BAUDRATE   115200   /* 必须与控制台波特率一致，否则会破坏控制台输出 */
 /* BNO055 UART 帧最长约 120 字节，留足裕量 */
 #define BUF_SIZE        256
 #define LINE_BUF_SIZE   200
 
 static rt_device_t uart_dev    = RT_NULL;
+static int         uart_baud   = 115200;
 
 /**
  * @brief 从 UART 轮询读取一行（以 '\r' 或 '\n' 为结束符，超时 timeout_ms）
@@ -150,34 +151,27 @@ static int parse_bn0055_frame(const char *line, bn0055_data_t *data)
 
 /**
  * @brief 读取一帧 BNO055 数据
- *        先发送 READ 命令，然后轮询等待响应（最长 1 秒）
+ *        直接轮询读取 UART RX 数据（模块可能自动循环发送）
+ *        不发送任何命令，避免干扰模块自动输出
  */
 int bn0055_read(bn0055_data_t *data)
 {
     char line[LINE_BUF_SIZE];
     int  len;
-    int  retry = 3;
+    int  retry = 5;
 
     if (data == RT_NULL || uart_dev == RT_NULL) return -RT_ERROR;
 
-    /* 发送读取命令，请求 BNO055 输出数据 */
-    rt_device_write(uart_dev, 0, "READ\r\n", 6);
-    rt_thread_mdelay(50);  /* 等待模块响应 */
-
     while (retry-- > 0) {
-        len = read_uart_line(line, sizeof(line), 1000);
-        if (len <= 0) {
-            rt_kprintf("[BN0055] read_uart_line timeout/empty, retry left=%d\n", retry);
-            continue;
+        /* 直接轮询读取，超时 2000ms（模块自动发送间隔可能较长） */
+        len = read_uart_line(line, sizeof(line), 2000);
+        if (len > 0) {
+            rt_kprintf("[BN0055] Raw: len=%d, raw=%.60s\n", len, line);
+            if (parse_bn0055_frame(line, data) == RT_EOK) {
+                data->error = 0;
+                return RT_EOK;
+            }
         }
-
-        rt_kprintf("[BN0055] Raw line: len=%d, content=%.60s\n", len, line);
-
-        if (parse_bn0055_frame(line, data) == RT_EOK) {
-            data->error = 0;
-            return RT_EOK;
-        }
-        rt_kprintf("[BN0055] Parse fail: len=%d, raw=%.40s\n", len, line);
     }
 
     return -RT_ERROR;
@@ -204,11 +198,11 @@ int bn0055_set_mode(uint8_t mode)
 /**
  * @brief 初始化 GY-BN0055（UART1，115200，PA9/PA10）
  *        使用轮询读取，不依赖 RX 中断，避免与控制台冲突
+ *        不重新配置波特率（控制台已配置为 115200），避免破坏控制台输出
  */
 int bn0055_init(void)
 {
     rt_err_t ret;
-    struct serial_configure config = RT_SERIAL_CONFIG_DEFAULT;
 
     /* 1. 查找 UART 设备 */
     uart_dev = rt_device_find(UART_NAME);
@@ -218,24 +212,14 @@ int bn0055_init(void)
     }
     rt_kprintf("BN0055: UART '%s' found\n", UART_NAME);
 
-    /* 2. 打开 UART（轮询读写模式） */
+    /* 2. 打开 UART（轮询读写模式）
+     *    不调用 RT_DEVICE_CTRL_CONFIG，避免改变控制台波特率配置 */
     ret = rt_device_open(uart_dev, RT_DEVICE_OFLAG_RDWR);
     if (ret != RT_EOK) {
         rt_kprintf("BN0055: Failed to open UART (ret=%d)\n", ret);
         return -RT_ERROR;
     }
 
-    /* 3. 配置波特率（必须在 open 之后） */
-    config.baud_rate = UART_BAUDRATE;
-    ret = rt_device_control(uart_dev, RT_DEVICE_CTRL_CONFIG, &config);
-    if (ret != RT_EOK) {
-        rt_kprintf("BN0055: UART config failed (ret=%d)\n", ret);
-    }
-
-    /* 4. 发送初始化命令 */
-    rt_device_write(uart_dev, 0, "INIT\r\n", 6);
-    rt_thread_mdelay(100);
-
-    rt_kprintf("BN0055: Init OK (baudrate=%d, polling mode)\n", UART_BAUDRATE);
+    rt_kprintf("BN0055: Init OK (baudrate=%d, polling mode, no reconfig)\n", UART_BAUDRATE);
     return RT_EOK;
 }
