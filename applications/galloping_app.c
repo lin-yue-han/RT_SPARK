@@ -257,8 +257,11 @@ static void dtu_report_thread_entry(void *parameter)
 
     rt_kprintf("[DTU-Report] Thread started\n");
 
-    /* 等待传感器就绪 */
-    rt_thread_mdelay(2000);
+    /* 立即发送一次心跳（不等传感器） */
+    if (dtu_is_ready()) {
+        dtu_send_heartbeat();
+        rt_kprintf("[DTU-Report] Initial heartbeat sent\n");
+    }
 
     while (1)
     {

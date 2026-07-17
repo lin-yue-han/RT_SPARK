@@ -17,6 +17,7 @@
 #include <rtthread.h>
 #include <rtdevice.h>
 #include <board.h>
+#include "dtu_sender.h"
 
 /* 左电机引脚 */
 #define LEFT_AIN1   GET_PIN(A, 0)   /* PA0 */
@@ -137,6 +138,15 @@ MSH_CMD_EXPORT(stop, stop);
 
 int main(void)
 {
+    /* ===== 第1步：尽早初始化 DTU（上电立即发送系统启动消息） ===== */
+    if (dtu_sender_init() == RT_EOK) {
+        rt_kprintf("[Main] DTU initialized, sending boot message...\n");
+        /* 立即发送启动消息，证明通信链路畅通 */
+        dtu_send_boot();
+    } else {
+        rt_kprintf("[Main] WARNING: DTU init failed\n");
+    }
+
     /* 系统启动时初始化电机引脚 */
     motor_init();
 

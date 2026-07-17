@@ -224,3 +224,25 @@ int dtu_send_heartbeat(void)
 
     return dtu_write(buf, len);
 }
+
+int dtu_send_boot(void)
+{
+    if (g_dtu_uart == RT_NULL) {
+        return -RT_ERROR;
+    }
+
+    char buf[DTU_JSON_BUF_SIZE];
+
+    int len = rt_snprintf(buf, sizeof(buf),
+        "{\"type\":\"boot\","
+        "\"ts\":%lu,"
+        "\"msg\":\"RT_SPARK system started\","
+        "\"version\":\"1.0\"}\n",
+        (unsigned long)rt_tick_get());
+
+    if (len < 0 || len >= (int)sizeof(buf)) {
+        return -RT_ERROR;
+    }
+
+    return dtu_write(buf, len);
+}

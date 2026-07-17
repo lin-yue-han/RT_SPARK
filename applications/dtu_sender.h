@@ -65,6 +65,12 @@ int dtu_send_motor(const char *motor_state, int position);
 int dtu_send_heartbeat(void);
 
 /**
+ * @brief 发送系统启动消息到 DTU
+ * @return 发送字节数，<0 表示失败
+ */
+int dtu_send_boot(void);
+
+/**
  * @brief 检查 DTU 模块是否已初始化
  * @return 1=已初始化, 0=未初始化
  */

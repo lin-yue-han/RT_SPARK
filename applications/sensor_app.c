@@ -154,6 +154,109 @@ static int sensor_auto_init(void)
     g_sensor_ready = 1;
     rt_kprintf("[AutoInit] Sensor init done. ready=%d\n", g_sensor_ready);
 
+    /* 启动实时打印线程（每秒输出传感器数据） */
+    sensor_monitor_start();
+
     return 0;
 }
 INIT_APP_EXPORT(sensor_auto_init);
+
+/* ================================================================
+ * 实时监控线程（上电自动启动，每秒打印，不阻塞终端）
+ * ================================================================ */
+
+static rt_thread_t g_monitor_thread = RT_NULL;
+static int g_monitor_running = 0;
+
+static void sensor_monitor_entry(void *parameter)
+{
+    int count = 0;
+
+    rt_kprintf("\n");
+    rt_kprintf("==================================================\n");
+    rt_kprintf("  Sensor Monitor Started (1s interval)\n");
+    rt_kprintf("  Type 'sensor_monitor_stop' to stop\n");
+    rt_kprintf("==================================================\n\n");
+
+    while (g_monitor_running) {
+        count++;
+        rt_kprintf("---- [%d] ----\n", count);
+
+        if (sht3x_read(&sht3x_data) == RT_EOK) {
+            rt_kprintf("  [SHT3X] Temp: %.2f C  |  Humi: %.2f %%RH\n",
+                       (double)sht3x_data.temperature,
+                       (double)sht3x_data.humidity);
+        } else {
+            rt_kprintf("  [SHT3X] Read FAILED\n");
+        }
+
+        if (bn0055_read(&bn0055_data) == RT_EOK) {
+            rt_kprintf("  [BNO055] Accel X: %+.2f  Y: %+.2f  Z: %+.2f m/s^2\n",
+                       (double)bn0055_data.accel_x,
+                       (double)bn0055_data.accel_y,
+                       (double)bn0055_data.accel_z);
+            rt_kprintf("  [BNO055] Gyro  X: %+.2f  Y: %+.2f  Z: %+.2f deg/s\n",
+                       (double)bn0055_data.gyro_x,
+                       (double)bn0055_data.gyro_y,
+                       (double)bn0055_data.gyro_z);
+            rt_kprintf("  [BNO055] Euler H: %+.1f  R: %+.1f  P: %+.1f deg\n",
+                       (double)bn0055_data.euler_heading,
+                       (double)bn0055_data.euler_roll,
+                       (double)bn0055_data.euler_pitch);
+        } else {
+            rt_kprintf("  [BNO055] Read FAILED\n");
+        }
+
+        rt_thread_mdelay(1000);
+    }
+
+    rt_kprintf("[Monitor] Stopped.\n");
+}
+
+/**
+ * @brief 启动实时监控线程
+ */
+static void sensor_monitor_start(void)
+{
+    if (g_monitor_running) {
+        rt_kprintf("[Monitor] Already running\n");
+        return;
+    }
+
+    g_monitor_running = 1;
+    g_monitor_thread = rt_thread_create(
+        "sensor_mon",
+        sensor_monitor_entry,
+        RT_NULL,
+        2048,
+        RT_THREAD_PRIORITY_MAX - 3,
+        20);
+
+    if (g_monitor_thread != RT_NULL) {
+        rt_thread_startup(g_monitor_thread);
+    } else {
+        rt_kprintf("[Monitor] Thread create FAILED\n");
+        g_monitor_running = 0;
+    }
+}
+
+/**
+ * @brief 停止监控线程
+ *        msh: sensor_monitor_stop
+ */
+static void sensor_monitor_stop(void)
+{
+    g_monitor_running = 0;
+    rt_kprintf("[Monitor] Stopping...\n");
+}
+MSH_CMD_EXPORT(sensor_monitor_stop, stop real-time sensor monitor);
+
+/**
+ * @brief 重新启动监控
+ *        msh: sensor_monitor
+ */
+static void sensor_monitor_cmd(void)
+{
+    sensor_monitor_start();
+}
+MSH_CMD_EXPORT(sensor_monitor_cmd, start real-time sensor monitor);
