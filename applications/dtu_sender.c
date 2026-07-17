@@ -30,6 +30,53 @@
 static rt_device_t g_dtu_console = RT_NULL;
 
 /* ================================================================
+ * 辅助函数：将浮点数转为字符串（避免 rt_snprintf 不支持 %f）
+ * ================================================================ */
+static int f2s_1(char *buf, float v)   /* 1位小数 */
+{
+    int sign = (v < 0) ? -1 : 1;
+    int int_part = (int)(v * sign);
+    int frac = (int)((v * sign - int_part) * 10 + 0.5f);
+    if (sign < 0)
+        return rt_snprintf(buf, 16, "-%d.%d", int_part, frac);
+    else
+        return rt_snprintf(buf, 16, "%d.%d", int_part, frac);
+}
+
+static int f2s_2(char *buf, float v)   /* 2位小数 */
+{
+    int sign = (v < 0) ? -1 : 1;
+    int int_part = (int)(v * sign);
+    int frac = (int)((v * sign - int_part) * 100 + 0.5f);
+    if (sign < 0)
+        return rt_snprintf(buf, 16, "-%d.%02d", int_part, frac);
+    else
+        return rt_snprintf(buf, 16, "%d.%02d", int_part, frac);
+}
+
+static int f2s_3(char *buf, float v)   /* 3位小数 */
+{
+    int sign = (v < 0) ? -1 : 1;
+    int int_part = (int)(v * sign);
+    int frac = (int)((v * sign - int_part) * 1000 + 0.5f);
+    if (sign < 0)
+        return rt_snprintf(buf, 16, "-%d.%03d", int_part, frac);
+    else
+        return rt_snprintf(buf, 16, "%d.%03d", int_part, frac);
+}
+
+static int f2s_4(char *buf, float v)   /* 4位小数 */
+{
+    int sign = (v < 0) ? -1 : 1;
+    int int_part = (int)(v * sign);
+    int frac = (int)((v * sign - int_part) * 10000 + 0.5f);
+    if (sign < 0)
+        return rt_snprintf(buf, 20, "-%d.%04d", int_part, frac);
+    else
+        return rt_snprintf(buf, 20, "%d.%04d", int_part, frac);
+}
+
+/* ================================================================
  * 初始化
  * ================================================================ */
 
@@ -61,9 +108,6 @@ int dtu_is_ready(void)
 
 /**
  * @brief 发送原始数据到控制台设备（ST-Link VCP）
- * @param data  数据指针
- * @param len   数据长度
- * @return 实际发送字节数，<0 表示失败
  */
 static int dtu_write(const char *data, int len)
 {
@@ -86,35 +130,40 @@ int dtu_send_galloping(const gd_feature_t *feat, galloping_state_t state)
     }
 
     char buf[DTU_JSON_BUF_SIZE];
+    char s_amp[16], s_amp_x[16], s_amp_y[16], s_amp_z[16];
+    char s_disp[20], s_freq[16], s_zcr[16], s_rms[16], s_vibr[16], s_torsion[16], s_conf[16];
+
+    f2s_3(s_amp,   feat->amp_dominant);
+    f2s_3(s_amp_x, feat->amp_x_pp);
+    f2s_3(s_amp_y, feat->amp_y_pp);
+    f2s_3(s_amp_z, feat->amp_z_pp);
+    f2s_4(s_disp,  feat->displacement_est);
+    f2s_3(s_freq,  feat->dominant_freq);
+    f2s_1(s_zcr,   feat->zero_cross_rate);
+    f2s_3(s_rms,   feat->rms_accel);
+    f2s_3(s_vibr,  feat->vibr_energy);
+    f2s_2(s_torsion, feat->torsion_deg);
+    f2s_2(s_conf,  feat->confidence);
 
     int len = rt_snprintf(buf, sizeof(buf),
         "{\"type\":\"galloping\","
         "\"ts\":%lu,"
         "\"state\":\"%s\","
-        "\"amp_dominant\":%.3f,"
-        "\"amp_x_pp\":%.3f,"
-        "\"amp_y_pp\":%.3f,"
-        "\"amp_z_pp\":%.3f,"
-        "\"displacement_est\":%.4f,"
-        "\"dominant_freq\":%.3f,"
-        "\"zero_cross_rate\":%.1f,"
-        "\"rms_accel\":%.3f,"
-        "\"vibr_energy\":%.3f,"
-        "\"torsion_deg\":%.2f,"
-        "\"confidence\":%.2f}\n",
+        "\"amp_dominant\":%s,"
+        "\"amp_x_pp\":%s,"
+        "\"amp_y_pp\":%s,"
+        "\"amp_z_pp\":%s,"
+        "\"displacement_est\":%s,"
+        "\"dominant_freq\":%s,"
+        "\"zero_cross_rate\":%s,"
+        "\"rms_accel\":%s,"
+        "\"vibr_energy\":%s,"
+        "\"torsion_deg\":%s,"
+        "\"confidence\":%s}\n",
         (unsigned long)rt_tick_get(),
         gd_state_name(state),
-        (double)feat->amp_dominant,
-        (double)feat->amp_x_pp,
-        (double)feat->amp_y_pp,
-        (double)feat->amp_z_pp,
-        (double)feat->displacement_est,
-        (double)feat->dominant_freq,
-        (double)feat->zero_cross_rate,
-        (double)feat->rms_accel,
-        (double)feat->vibr_energy,
-        (double)feat->torsion_deg,
-        (double)feat->confidence);
+        s_amp, s_amp_x, s_amp_y, s_amp_z,
+        s_disp, s_freq, s_zcr, s_rms, s_vibr, s_torsion, s_conf);
 
     if (len < 0 || len >= (int)sizeof(buf)) {
         rt_kprintf("[DTU] JSON overflow (galloping)\n");
@@ -131,15 +180,18 @@ int dtu_send_env(float temperature, float humidity)
     }
 
     char buf[DTU_JSON_BUF_SIZE];
+    char s_temp[16], s_humi[16];
+
+    f2s_1(s_temp, temperature);
+    f2s_1(s_humi, humidity);
 
     int len = rt_snprintf(buf, sizeof(buf),
         "{\"type\":\"env\","
         "\"ts\":%lu,"
-        "\"temperature\":%.1f,"
-        "\"humidity\":%.1f}\n",
+        "\"temperature\":%s,"
+        "\"humidity\":%s}\n",
         (unsigned long)rt_tick_get(),
-        (double)temperature,
-        (double)humidity);
+        s_temp, s_humi);
 
     if (len < 0 || len >= (int)sizeof(buf)) {
         return -RT_ERROR;
@@ -162,8 +214,7 @@ int dtu_send_motor(const char *motor_state, int position)
         "\"motor_state\":\"%s\","
         "\"position\":%d}\n",
         (unsigned long)rt_tick_get(),
-        motor_state,
-        position);
+        motor_state, position);
 
     if (len < 0 || len >= (int)sizeof(buf)) {
         return -RT_ERROR;

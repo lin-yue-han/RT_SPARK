@@ -6,6 +6,7 @@
  * Change Logs:
  * Date           Author        Notes
  * 2026-06-25     Administrator the first version
+ * 2026-07-18     Administrator fix: use polling read instead of INT_RX
  */
 #include "gy_bn0055.h"
 #include <stdint.h>
@@ -20,51 +21,27 @@
 #define LINE_BUF_SIZE   200
 
 static rt_device_t uart_dev    = RT_NULL;
-static rt_sem_t    uart_rx_sem = RT_NULL;
 
 /**
- * @brief UART 接收中断回调——释放信号量通知读取线程
- */
-static rt_err_t uart_rx_indicate(rt_device_t dev, rt_size_t size)
-{
-    if (uart_rx_sem != RT_NULL) {
-        rt_sem_release(uart_rx_sem);
-    }
-    return RT_EOK;
-}
-
-/**
- * @brief 从 UART 读取一行（以 '\r' 或 '\n' 为结束符，超时 timeout_ms ms）
- * @return 读取到的有效字符数（不含终止符）；0 或负值表示超时/错误
+ * @brief 从 UART 轮询读取一行（以 '\r' 或 '\n' 为结束符，超时 timeout_ms）
+ * @return 读取到的有效字符数（不含终止符）；0 表示超时/无数据
  */
 static int read_uart_line(char *line, int max_len, int timeout_ms)
 {
-    int      pos        = 0;
-    char     ch;
+    int       pos = 0;
+    char      ch;
     rt_tick_t start    = rt_tick_get();
     rt_tick_t deadline = start + rt_tick_from_millisecond(timeout_ms);
 
     while (pos < max_len - 1) {
-        /* 剩余超时时间（tick） */
-        rt_tick_t now = rt_tick_get();
-        if (now >= deadline) {
+        if (rt_tick_get() >= deadline) {
             break;
         }
-        rt_tick_t wait_ticks = deadline - now;
-        if (wait_ticks > rt_tick_from_millisecond(50)) {
-            wait_ticks = rt_tick_from_millisecond(50);
-        }
 
-        /* 等待数据就绪信号 */
-        if (rt_sem_take(uart_rx_sem, wait_ticks) != RT_EOK) {
-            continue;  /* 超时片段，重新判断总超时 */
-        }
-
-        /* 读取所有当前可用字节 */
-        while (rt_device_read(uart_dev, 0, &ch, 1) == 1) {
+        /* 轮询读取一个字节 */
+        if (rt_device_read(uart_dev, 0, &ch, 1) == 1) {
             if (ch == '\r' || ch == '\n') {
                 if (pos > 0) {
-                    /* 收到行结束符且已有内容，结束本行 */
                     line[pos] = '\0';
                     return pos;
                 }
@@ -76,6 +53,9 @@ static int read_uart_line(char *line, int max_len, int timeout_ms)
                 line[pos] = '\0';
                 return pos;
             }
+        } else {
+            /* 无数据，短暂等待 */
+            rt_thread_mdelay(5);
         }
     }
 
@@ -87,10 +67,6 @@ static int read_uart_line(char *line, int max_len, int timeout_ms)
  * @brief 解析 BNO055 UART 数据帧
  * 期望格式：
  *   $BNO055,ACC=ax,ay,az,GYR=gx,gy,gz,MAG=mx,my,mz,EUL=h,r,p,QUAT=w,x,y,z*CS
- *
- * 注意：外层 strtok_r 以 ',' 切分后，各段可能是：
- *   "ACC=ax"  "ay"  "az"  "GYR=gx" ...
- * 因此对带 '=' 的段取 '=' 后的值，后续裸数字段顺序延续到当前字段组。
  */
 static int parse_bn0055_frame(const char *line, bn0055_data_t *data)
 {
@@ -98,7 +74,6 @@ static int parse_bn0055_frame(const char *line, bn0055_data_t *data)
     char *token;
     char *saveptr;
 
-    /* 各分量计数器，用于按顺序填入 */
     int  parsed_count = 0;
     int  field        = -1;  /* 0=ACC 1=GYR 2=MAG 3=EUL 4=QUAT */
     int  sub_idx      = 0;
@@ -117,7 +92,6 @@ static int parse_bn0055_frame(const char *line, bn0055_data_t *data)
     while (token != NULL) {
         const char *val_str = NULL;
 
-        /* 检测字段头并切换 field 状态机 */
         if (strncmp(token, "ACC=", 4) == 0) {
             field = 0; sub_idx = 0; val_str = token + 4; parsed_count++;
         } else if (strncmp(token, "GYR=", 4) == 0) {
@@ -131,7 +105,6 @@ static int parse_bn0055_frame(const char *line, bn0055_data_t *data)
         } else if (strncmp(token, "$BNO055", 7) == 0) {
             /* 跳过帧头 */
         } else {
-            /* 延续上一个字段的后续分量 */
             val_str = token;
         }
 
@@ -177,6 +150,7 @@ static int parse_bn0055_frame(const char *line, bn0055_data_t *data)
 
 /**
  * @brief 读取一帧 BNO055 数据
+ *        先发送 READ 命令，然后轮询等待响应（最长 1 秒）
  */
 int bn0055_read(bn0055_data_t *data)
 {
@@ -191,7 +165,7 @@ int bn0055_read(bn0055_data_t *data)
     rt_thread_mdelay(50);  /* 等待模块响应 */
 
     while (retry-- > 0) {
-        len = read_uart_line(line, sizeof(line), 300);
+        len = read_uart_line(line, sizeof(line), 1000);
         if (len <= 0) {
             rt_kprintf("[BN0055] read_uart_line timeout/empty, retry left=%d\n", retry);
             continue;
@@ -210,8 +184,7 @@ int bn0055_read(bn0055_data_t *data)
 }
 
 /**
- * @brief 设置 BNO055 工作模式（通过 UART 发送配置命令）
- *        GY-BN0055 通常在固件中固定输出模式，此接口预留兼容性
+ * @brief 设置 BNO055 工作模式
  */
 int bn0055_set_mode(uint8_t mode)
 {
@@ -222,8 +195,6 @@ int bn0055_set_mode(uint8_t mode)
 
     len = rt_snprintf(cmd, sizeof(cmd), "MODE=%d\r\n", mode);
     rt_device_write(uart_dev, 0, cmd, len);
-
-    /* 等待模块切换（100 ms） */
     rt_thread_mdelay(100);
 
     rt_kprintf("BN0055: set mode %d\n", mode);
@@ -232,8 +203,7 @@ int bn0055_set_mode(uint8_t mode)
 
 /**
  * @brief 初始化 GY-BN0055（UART1，115200，PA9/PA10）
- *        BNO055 使用 UART1 RX(PA10) 读取数据，UART1 TX(PA9) 留给控制台输出 JSON
- *        FinSH 已关闭，RX 独占给 BNO055，不会冲突
+ *        使用轮询读取，不依赖 RX 中断，避免与控制台冲突
  */
 int bn0055_init(void)
 {
@@ -248,33 +218,24 @@ int bn0055_init(void)
     }
     rt_kprintf("BN0055: UART '%s' found\n", UART_NAME);
 
-    /* 2. 创建接收信号量 */
-    uart_rx_sem = rt_sem_create("bn0055_sem", 0, RT_IPC_FLAG_FIFO);
-    if (uart_rx_sem == RT_NULL) {
-        rt_kprintf("BN0055: Failed to create semaphore\n");
-        return -RT_ERROR;
-    }
-
-    /* 3. 打开 UART（中断接收模式） */
-    ret = rt_device_open(uart_dev, RT_DEVICE_OFLAG_RDWR | RT_DEVICE_FLAG_INT_RX);
+    /* 2. 打开 UART（轮询读写模式） */
+    ret = rt_device_open(uart_dev, RT_DEVICE_OFLAG_RDWR);
     if (ret != RT_EOK) {
         rt_kprintf("BN0055: Failed to open UART (ret=%d)\n", ret);
-        rt_sem_delete(uart_rx_sem);
-        uart_rx_sem = RT_NULL;
         return -RT_ERROR;
     }
 
-    /* 4. 配置波特率（必须在 open 之后） */
+    /* 3. 配置波特率（必须在 open 之后） */
     config.baud_rate = UART_BAUDRATE;
     ret = rt_device_control(uart_dev, RT_DEVICE_CTRL_CONFIG, &config);
     if (ret != RT_EOK) {
         rt_kprintf("BN0055: UART config failed (ret=%d)\n", ret);
-        /* 非致命，继续运行 */
     }
 
-    /* 5. 注册接收回调 */
-    rt_device_set_rx_indicate(uart_dev, uart_rx_indicate);
+    /* 4. 发送初始化命令 */
+    rt_device_write(uart_dev, 0, "INIT\r\n", 6);
+    rt_thread_mdelay(100);
 
-    rt_kprintf("BN0055: Init OK (baudrate=%d)\n", UART_BAUDRATE);
+    rt_kprintf("BN0055: Init OK (baudrate=%d, polling mode)\n", UART_BAUDRATE);
     return RT_EOK;
 }
