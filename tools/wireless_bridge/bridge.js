@@ -378,6 +378,14 @@ function openComPort() {
 
   comPort.on('open', () => {
     log("COM", `${COM_PORT} 已打开 (baud=115200)`);
+    // 通知所有 WebSocket 客户端：设备已接入（新架构：COM9 直连）
+    const deviceMsg = JSON.stringify({
+      type: "system",
+      event: "device_connected",
+      remote: "COM9-direct",
+      ts: Date.now(),
+    });
+    broadcastText(deviceMsg);
   });
 
   comPort.on('data', (chunk) => {
