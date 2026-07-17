@@ -13,9 +13,9 @@
 #include "gy_bn0055.h"
 
 /* 全局数据存储 */
-static sht3x_data_t  sht3x_data;
-static bn0055_data_t bn0055_data;
-static int           g_sensor_ready = 0;   /* 初始化完成标志 */
+sht3x_data_t  sht3x_data;
+bn0055_data_t bn0055_data;
+int           g_sensor_ready = 0;   /* 初始化完成标志 */
 
 /**
  * @brief 读取所有传感器并打印
@@ -122,4 +122,38 @@ static void sensor_loop(void)
 }
 MSH_CMD_EXPORT(sensor_loop, loop read all sensors every second);
 
-/* 不再使用 INIT_APP_EXPORT，改为手动 sensor_init 命令 */
+/* ================================================================
+ * 上电自动初始化（INIT_APP_EXPORT 会在 main() 之后自动调用）
+ * ================================================================ */
+
+/**
+ * @brief 上电自动初始化传感器
+ *        无需手动输入 sensor_init 命令
+ * @return 0 成功（INIT_APP_EXPORT 约定返回值）
+ */
+static int sensor_auto_init(void)
+{
+    int ret;
+
+    rt_kprintf("[AutoInit] Sensor init start...\n");
+
+    ret = sht3x_init();
+    if (ret != RT_EOK) {
+        rt_kprintf("[AutoInit] SHT3X init FAILED! (err=%d)\n", ret);
+    } else {
+        rt_kprintf("[AutoInit] SHT3X OK\n");
+    }
+
+    ret = bn0055_init();
+    if (ret != RT_EOK) {
+        rt_kprintf("[AutoInit] BNO055 init FAILED! (err=%d)\n", ret);
+    } else {
+        rt_kprintf("[AutoInit] BNO055 OK\n");
+    }
+
+    g_sensor_ready = 1;
+    rt_kprintf("[AutoInit] Sensor init done. ready=%d\n", g_sensor_ready);
+
+    return 0;
+}
+INIT_APP_EXPORT(sensor_auto_init);

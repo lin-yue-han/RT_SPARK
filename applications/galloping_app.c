@@ -3,13 +3,17 @@
  *
  * 启动一个 50ms 定时采集线程：
  *   读取 BNO055 → MAF滤波 → 去直流 → 窗口累积 →
- *   窗口满时自动提取特征 + 判定状态 → 打印结果
+ *   窗口满时自动提取特征 + 判定状态 → 打印结果 + DTU发送
+ *
+ * 同时启动 DTU 心跳和温湿度定时发送。
  */
 
 #include <rtthread.h>
 #include <rtdevice.h>
 #include "gy_bn0055.h"
 #include "galloping_detect.h"
+#include "dtu_sender.h"
+#include "sht3x.h"
 
 /* ---- 线程配置 ---- */
 #define GD_THREAD_STACK_SIZE    2048
@@ -18,6 +22,10 @@
 
 /* ---- 全局句柄 ---- */
 static gd_detector_t *g_detector = RT_NULL;
+
+/* 温湿度传感器数据 */
+extern sht3x_data_t sht3x_data;   /* 定义在 sensor_app.c */
+extern int g_sensor_ready;        /* 定义在 sensor_app.c */
 
 /**
  * @brief 状态变化回调：当检测到状态切换时打印告警
@@ -105,6 +113,11 @@ static void galloping_thread_entry(void *parameter)
                 on_state_changed(prev_state, feat->state, feat);
                 prev_state = feat->state;
             }
+
+            /* 通过 DTU 发送舞动特征数据 */
+            if (dtu_is_ready()) {
+                dtu_send_galloping(feat, feat->state);
+            }
         } else {
             /* 每秒打印一次采集心跳（防止控制台静默） */
             now = rt_tick_get();
@@ -134,6 +147,11 @@ static void galloping_start(void)
     if (g_detector != RT_NULL) {
         rt_kprintf("[Galloping] Already running!\n");
         return;
+    }
+
+    /* 初始化 DTU 发送模块 */
+    if (dtu_sender_init() != RT_EOK) {
+        rt_kprintf("[Galloping] WARNING: DTU init failed, data will not be sent\n");
     }
 
     /* 创建检测器：20Hz 采样，64 点窗口 */
@@ -216,3 +234,170 @@ static void galloping_reset(void)
     }
 }
 MSH_CMD_EXPORT(galloping_reset, reset galloping detector);
+
+/* ================================================================
+ * DTU 定时上报线程（温湿度 + 心跳）
+ * ================================================================ */
+
+#define DTU_REPORT_STACK_SIZE   1536
+#define DTU_REPORT_PRIORITY     15
+
+/**
+ * @brief DTU 定时上报线程入口
+ *
+ * 每 5 秒发送一次温湿度数据，
+ * 每 10 秒发送一次心跳包。
+ */
+static void dtu_report_thread_entry(void *parameter)
+{
+    rt_tick_t last_env_tick  = 0;
+    rt_tick_t last_hb_tick   = 0;
+    rt_tick_t now;
+    int ret;
+
+    rt_kprintf("[DTU-Report] Thread started\n");
+
+    /* 等待传感器就绪 */
+    rt_thread_mdelay(2000);
+
+    while (1)
+    {
+        now = rt_tick_get();
+
+        /* 每 5 秒发送温湿度 */
+        if (now - last_env_tick >= rt_tick_from_millisecond(DTU_ENV_INTERVAL_MS)) {
+            if (dtu_is_ready() && g_sensor_ready) {
+                ret = sht3x_read(&sht3x_data);
+                if (ret == RT_EOK) {
+                    dtu_send_env(sht3x_data.temperature, sht3x_data.humidity);
+                }
+            }
+            last_env_tick = now;
+        }
+
+        /* 每 10 秒发送心跳 */
+        if (now - last_hb_tick >= rt_tick_from_millisecond(DTU_HEARTBEAT_INTERVAL_MS)) {
+            if (dtu_is_ready()) {
+                dtu_send_heartbeat();
+            }
+            last_hb_tick = now;
+        }
+
+        rt_thread_mdelay(1000);  /* 1 秒检查一次 */
+    }
+}
+
+/**
+ * @brief 启动 DTU 定时上报
+ *        msh: dtu_report_start
+ */
+static void dtu_report_start(void)
+{
+    rt_thread_t thread;
+
+    if (!dtu_is_ready()) {
+        rt_kprintf("[DTU-Report] DTU not initialized! Run galloping_start first.\n");
+        return;
+    }
+
+    thread = rt_thread_create("dtu_rpt",
+                              dtu_report_thread_entry,
+                              RT_NULL,
+                              DTU_REPORT_STACK_SIZE,
+                              DTU_REPORT_PRIORITY,
+                              10);
+    if (thread == RT_NULL) {
+        rt_kprintf("[DTU-Report] Failed to create thread!\n");
+        return;
+    }
+
+    rt_thread_startup(thread);
+    rt_kprintf("[DTU-Report] Started (env every %dms, heartbeat every %dms)\n",
+               DTU_ENV_INTERVAL_MS, DTU_HEARTBEAT_INTERVAL_MS);
+}
+MSH_CMD_EXPORT(dtu_report_start, start DTU periodic reporting);
+
+/* ================================================================
+ * 上电自动启动（INIT_APP_EXPORT 会在 main() 及 sensor_auto_init 之后调用）
+ * ================================================================ */
+
+/**
+ * @brief 上电自动启动舞动检测 + DTU 数据上报
+ *
+ * 执行顺序：
+ *   1. 等待传感器就绪（最多等 5 秒）
+ *   2. 初始化 DTU 发送模块（UART2）
+ *   3. 创建并启动舞动检测线程
+ *   4. 创建并启动 DTU 定时上报线程（温湿度 + 心跳）
+ *
+ * 使用 INIT_APP_EXPORT 自动注册，无需手动输入命令。
+ * 仍可使用 galloping_stop / galloping_start 手动控制。
+ *
+ * @return 0
+ */
+static int galloping_auto_start(void)
+{
+    int wait_ms = 0;
+
+    rt_kprintf("[AutoInit] Galloping auto-start waiting for sensor...\n");
+
+    /* 等待传感器初始化完成（最多 5 秒） */
+    while (!g_sensor_ready && wait_ms < 5000) {
+        rt_thread_mdelay(100);
+        wait_ms += 100;
+    }
+
+    if (!g_sensor_ready) {
+        rt_kprintf("[AutoInit] WARNING: Sensor not ready after 5s, starting anyway\n");
+    } else {
+        rt_kprintf("[AutoInit] Sensor ready, starting galloping detection\n");
+    }
+
+    /* 初始化 DTU 发送模块 */
+    if (dtu_sender_init() != RT_EOK) {
+        rt_kprintf("[AutoInit] WARNING: DTU init failed, data will not be sent\n");
+    }
+
+    /* 创建检测器 */
+    g_detector = gd_create("cable1", GD_SAMPLE_RATE_HZ, GD_WINDOW_SIZE);
+    if (g_detector == RT_NULL) {
+        rt_kprintf("[AutoInit] Failed to create detector!\n");
+        return -1;
+    }
+
+    /* 启动舞动采集线程 */
+    rt_thread_t galloping_thread = rt_thread_create(
+        "galloping",
+        galloping_thread_entry,
+        RT_NULL,
+        GD_THREAD_STACK_SIZE,
+        GD_THREAD_PRIORITY,
+        10);
+
+    if (galloping_thread == RT_NULL) {
+        rt_kprintf("[AutoInit] Failed to create galloping thread!\n");
+        gd_destroy(g_detector);
+        g_detector = RT_NULL;
+        return -1;
+    }
+    rt_thread_startup(galloping_thread);
+
+    /* 启动 DTU 定时上报线程 */
+    rt_thread_t report_thread = rt_thread_create(
+        "dtu_rpt",
+        dtu_report_thread_entry,
+        RT_NULL,
+        DTU_REPORT_STACK_SIZE,
+        DTU_REPORT_PRIORITY,
+        10);
+
+    if (report_thread == RT_NULL) {
+        rt_kprintf("[AutoInit] Failed to create DTU report thread!\n");
+    } else {
+        rt_thread_startup(report_thread);
+    }
+
+    rt_kprintf("[AutoInit] Galloping detection + DTU reporting started\n");
+    return 0;
+}
+INIT_APP_EXPORT(galloping_auto_start);

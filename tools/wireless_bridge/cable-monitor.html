@@ -1,0 +1,1534 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RT_SPARK 电缆监测系统</title>
+  <style>
+    :root {
+      --bg: #0a0c10;
+      --surface: #11151d;
+      --surface-raised: #161b22;
+      --border: #21262d;
+      --border-subtle: #30363d;
+      --text-primary: #e6edf3;
+      --text-secondary: #8b949e;
+      --text-muted: #6e7681;
+      --accent: #3b82f6;
+      --accent-glow: rgba(59, 130, 246, 0.25);
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --ice: #22d3ee;
+      --ice-glow: rgba(34, 211, 238, 0.25);
+      --mono: "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", Menlo, monospace;
+      --radius: 14px;
+      --radius-sm: 8px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+
+    .dashboard {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 20px;
+      background: linear-gradient(135deg, rgba(17, 21, 29, 0.95), rgba(17, 21, 29, 0.7));
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand .logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent), #60a5fa);
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      font-size: 13px;
+      box-shadow: 0 0 16px var(--accent-glow);
+    }
+
+    .brand h1 {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
+    }
+
+    .brand p {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid transparent;
+      transition: all 0.2s ease;
+    }
+
+    .status-pill .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      position: relative;
+    }
+
+    .status-pill.online {
+      background: rgba(34, 197, 94, 0.1);
+      color: var(--success);
+      border-color: rgba(34, 197, 94, 0.25);
+    }
+
+    .status-pill.online .dot {
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+      animation: pulse-dot 2s infinite;
+    }
+
+    .status-pill.offline {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--danger);
+      border-color: rgba(239, 68, 68, 0.25);
+    }
+
+    .status-pill.offline .dot { background: var(--danger); }
+
+    .status-pill.warning {
+      background: rgba(245, 158, 11, 0.1);
+      color: var(--warning);
+      border-color: rgba(245, 158, 11, 0.25);
+    }
+
+    .status-pill.warning .dot { background: var(--warning); }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(0.85); }
+    }
+
+    /* Cards */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 4px 24px rgba(0, 0, 0, 0.15);
+      transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .card:hover { border-color: var(--border-subtle); }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .card-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      letter-spacing: -0.1px;
+    }
+
+    .card-subtitle {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+
+    .card-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .badge-live { background: rgba(239, 68, 68, 0.12); color: var(--danger); animation: pulse-live 2s infinite; }
+    @keyframes pulse-live { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+    .badge-idle { background: rgba(110, 118, 129, 0.15); color: var(--text-muted); }
+    .badge-safe { background: rgba(34, 197, 94, 0.12); color: var(--success); }
+    .badge-warn { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
+    .badge-danger { background: rgba(239, 68, 68, 0.12); color: var(--danger); }
+    .badge-ice { background: rgba(34, 211, 238, 0.12); color: var(--ice); }
+
+    /* Grids */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+    }
+
+    .kpi-card {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 18px 20px;
+    }
+
+    .kpi-icon {
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      flex-shrink: 0;
+      background: rgba(59, 130, 246, 0.1);
+      color: var(--accent);
+      border: 1px solid rgba(59, 130, 246, 0.15);
+    }
+
+    .kpi-icon.success { background: rgba(34, 197, 94, 0.1); color: var(--success); border-color: rgba(34, 197, 94, 0.15); }
+    .kpi-icon.warning { background: rgba(245, 158, 11, 0.1); color: var(--warning); border-color: rgba(245, 158, 11, 0.15); }
+    .kpi-icon.danger { background: rgba(239, 68, 68, 0.1); color: var(--danger); border-color: rgba(239, 68, 68, 0.15); }
+    .kpi-icon.ice { background: rgba(34, 211, 238, 0.1); color: var(--ice); border-color: rgba(34, 211, 238, 0.15); }
+
+    .kpi-content { flex: 1; min-width: 0; }
+    .kpi-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+    .kpi-value { font-size: 20px; font-weight: 700; font-family: var(--mono); color: var(--text-primary); }
+    .kpi-value.small { font-size: 15px; }
+    .kpi-value.ok { color: var(--success); }
+    .kpi-value.warn { color: var(--warning); }
+    .kpi-value.alert { color: var(--danger); }
+    .kpi-value.ice { color: var(--ice); }
+    .kpi-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    .secondary-grid {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr 1fr;
+      gap: 16px;
+    }
+
+    /* Chart containers */
+    .chart-wrapper {
+      position: relative;
+      width: 100%;
+      height: 240px;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    .chart-wrapper.small { height: 180px; }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .chart-overlay {
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: var(--mono);
+      pointer-events: none;
+    }
+
+    .chart-legend {
+      display: flex;
+      gap: 16px;
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+    .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+    /* Metrics */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .metric-box {
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      text-align: center;
+    }
+
+    .metric-box .label {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+
+    .metric-box .value {
+      font-size: 16px;
+      font-weight: 700;
+      font-family: var(--mono);
+      color: var(--text-primary);
+    }
+
+    .metric-box .value.ok { color: var(--success); }
+    .metric-box .value.warn { color: var(--warning); }
+    .metric-box .value.alert { color: var(--danger); }
+
+    /* Danger report */
+    .danger-report {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .danger-level {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 16px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    .danger-level .title {
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .danger-level .level {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .danger-level .level.safe { color: var(--success); }
+    .danger-level .level.warn { color: var(--warning); }
+    .danger-level .level.danger { color: var(--danger); }
+    .danger-level .level.ice { color: var(--ice); }
+
+    .danger-level .desc {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .level-bar {
+      height: 6px;
+      background: var(--border);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+
+    .level-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.4s ease, background-color 0.4s ease;
+    }
+
+    .level-fill.safe { background: var(--success); box-shadow: 0 0 8px rgba(34, 197, 94, 0.4); }
+    .level-fill.warn { background: var(--warning); box-shadow: 0 0 8px rgba(245, 158, 11, 0.4); }
+    .level-fill.danger { background: var(--danger); box-shadow: 0 0 8px rgba(239, 68, 68, 0.4); }
+    .level-fill.ice { background: var(--ice); box-shadow: 0 0 8px rgba(34, 211, 238, 0.4); }
+
+    .recommendation {
+      margin-top: 4px;
+      padding: 14px;
+      border-radius: var(--radius-sm);
+      background: rgba(59, 130, 246, 0.08);
+      border: 1px solid rgba(59, 130, 246, 0.15);
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .recommendation strong { color: var(--accent); display: block; margin-bottom: 4px; }
+
+    /* Environment / Ice / Vehicle */
+    .env-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .env-stat {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 14px;
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+
+    .env-stat .label { font-size: 12px; color: var(--text-secondary); }
+    .env-stat .value { font-size: 16px; font-weight: 700; font-family: var(--mono); }
+
+    .vehicle-visual {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      padding: 20px;
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      min-height: 120px;
+    }
+
+    .vehicle-state {
+      font-size: 14px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .vehicle-state .arrow {
+      width: 0;
+      height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      transition: all 0.2s ease;
+    }
+
+    .vehicle-state.forward .arrow { border-bottom: 10px solid var(--success); animation: bounce-up 1s infinite; }
+    .vehicle-state.backward .arrow { border-top: 10px solid var(--warning); animation: bounce-down 1s infinite; }
+    .vehicle-state.stop .arrow { width: 10px; height: 10px; border: none; border-radius: 2px; background: var(--text-muted); }
+
+    @keyframes bounce-up { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+    @keyframes bounce-down { 0%,100% { transform: translateY(0); } 50% { transform: translateY(3px); } }
+
+    .position-track {
+      width: 100%;
+      height: 8px;
+      background: var(--border);
+      border-radius: 999px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .position-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), #60a5fa);
+      border-radius: 999px;
+      transition: width 0.3s ease;
+      box-shadow: 0 0 10px var(--accent-glow);
+    }
+
+    .position-labels {
+      display: flex;
+      justify-content: space-between;
+      width: 100%;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    /* Controls */
+    .control-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: flex-end;
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .control-group .label { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 10px 20px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid var(--border-subtle);
+      background: var(--surface-raised);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      font-family: inherit;
+    }
+
+    .btn:hover { transform: translateY(-1px); border-color: var(--accent); color: var(--accent); }
+
+    .btn:active { transform: translateY(0) scale(0.98); }
+
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    .btn.forward { color: var(--success); border-color: rgba(34, 197, 94, 0.3); }
+    .btn.forward:hover { background: rgba(34, 197, 94, 0.1); border-color: var(--success); }
+
+    .btn.backward { color: var(--warning); border-color: rgba(245, 158, 11, 0.3); }
+    .btn.backward:hover { background: rgba(245, 158, 11, 0.1); border-color: var(--warning); }
+
+    .btn.stop { color: var(--danger); border-color: rgba(239, 68, 68, 0.3); }
+    .btn.stop:hover { background: rgba(239, 68, 68, 0.1); border-color: var(--danger); }
+
+    .btn.heater { color: var(--ice); border-color: rgba(34, 211, 238, 0.3); }
+    .btn.heater:hover { background: rgba(34, 211, 238, 0.1); border-color: var(--ice); }
+
+    .command-box {
+      display: flex;
+      gap: 8px;
+      flex: 1;
+      min-width: 240px;
+    }
+
+    .command-box input {
+      flex: 1;
+      padding: 10px 12px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+
+    .command-box input:focus { outline: none; border-color: var(--accent); }
+
+    .command-box button {
+      padding: 10px 18px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    .command-box button:hover { background: #2563eb; }
+
+    .stats-bar {
+      display: flex;
+      gap: 24px;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+      font-family: var(--mono);
+    }
+
+    /* Logs */
+    .log-panel {
+      height: 220px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .log-container {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column-reverse;
+      gap: 6px;
+      font-family: var(--mono);
+      font-size: 12px;
+      padding-right: 4px;
+    }
+
+    .log-container::-webkit-scrollbar { width: 6px; }
+    .log-container::-webkit-scrollbar-track { background: transparent; }
+    .log-container::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 3px; }
+
+    .log-entry {
+      display: flex;
+      gap: 10px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      line-height: 1.5;
+      word-break: break-all;
+      background: rgba(0, 0, 0, 0.15);
+    }
+
+    .log-entry .ts { color: var(--text-muted); flex-shrink: 0; }
+    .log-entry .tag {
+      flex-shrink: 0;
+      font-weight: 600;
+      padding: 0 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      line-height: 1.8;
+    }
+    .log-entry .msg { color: var(--text-secondary); }
+
+    .tag-galloping { background: rgba(168, 85, 247, 0.12); color: #c084fc; }
+    .tag-env { background: rgba(34, 197, 94, 0.12); color: var(--success); }
+    .tag-motor { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
+    .tag-heartbeat { background: rgba(110, 118, 129, 0.15); color: var(--text-muted); }
+    .tag-system { background: rgba(239, 68, 68, 0.12); color: var(--danger); }
+    .tag-ice { background: rgba(34, 211, 238, 0.12); color: var(--ice); }
+
+    /* Toast */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      padding: 12px 18px;
+      border-radius: var(--radius-sm);
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+      color: var(--text-primary);
+      font-size: 13px;
+      z-index: 1000;
+      opacity: 0;
+      transform: translateY(20px);
+      transition: all 0.3s ease;
+      pointer-events: none;
+      max-width: 320px;
+    }
+
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.error { border-color: rgba(239, 68, 68, 0.4); background: rgba(61, 17, 20, 0.95); color: #fff; }
+    .toast.success { border-color: rgba(34, 197, 94, 0.4); background: rgba(27, 67, 50, 0.95); color: #fff; }
+
+    /* Responsive */
+    @media (max-width: 1200px) {
+      .main-grid { grid-template-columns: 1.5fr 1fr; }
+      .secondary-grid { grid-template-columns: 1fr 1fr; }
+      .metrics-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+
+    @media (max-width: 900px) {
+      .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+      .main-grid { grid-template-columns: 1fr; }
+      .secondary-grid { grid-template-columns: 1fr; }
+      .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media (max-width: 600px) {
+      .dashboard { padding: 12px; gap: 12px; }
+      .kpi-grid { grid-template-columns: 1fr; }
+      .metrics-grid { grid-template-columns: 1fr; }
+      .control-grid { flex-direction: column; align-items: stretch; }
+      .command-box { min-width: 0; }
+      .brand h1 { font-size: 16px; }
+    }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="dashboard">
+  <header>
+    <div class="brand">
+      <div class="logo">RT</div>
+      <div>
+        <h1>RT_SPARK 电缆监测系统</h1>
+        <p>实时舞动 / 覆冰 / 环境 / 小车状态监控</p>
+      </div>
+    </div>
+    <div id="statusBadge" class="status-pill offline">
+      <span class="dot"></span>
+      <span id="statusText">未连接</span>
+    </div>
+  </header>
+
+  <!-- KPI Cards -->
+  <section class="kpi-grid">
+    <div class="card kpi-card">
+      <div class="kpi-icon" id="connIcon">WS</div>
+      <div class="kpi-content">
+        <div class="kpi-label">数据连接</div>
+        <div class="kpi-value small" id="connStatus">WebSocket 断开</div>
+        <div class="kpi-meta" id="deviceStatus">Air778E: 未接入</div>
+      </div>
+    </div>
+    <div class="card kpi-card">
+      <div class="kpi-icon ice">ICE</div>
+      <div class="kpi-content">
+        <div class="kpi-label">覆冰危险等级</div>
+        <div class="kpi-value ice" id="iceLevelText">评估中</div>
+        <div class="kpi-meta" id="iceMeta">等待环境数据</div>
+      </div>
+    </div>
+    <div class="card kpi-card">
+      <div class="kpi-icon warning">TMP</div>
+      <div class="kpi-content">
+        <div class="kpi-label">环境温度</div>
+        <div class="kpi-value" id="kpiTemp">--.- °C</div>
+        <div class="kpi-meta" id="kpiHumidity">湿度 --.- %RH</div>
+      </div>
+    </div>
+    <div class="card kpi-card">
+      <div class="kpi-icon success">POS</div>
+      <div class="kpi-content">
+        <div class="kpi-label">小车位置</div>
+        <div class="kpi-value" id="kpiPosition">--%</div>
+        <div class="kpi-meta" id="kpiMotorState">电机停止</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main Grid: Waveform + Danger Report -->
+  <section class="main-grid">
+    <div class="card wave-card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">舞动实时波形</div>
+          <div class="card-subtitle">基于主导频率与振幅合成的加速度时域曲线</div>
+        </div>
+        <span id="liveBadge" class="card-badge badge-idle">未接收</span>
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="waveChart"></canvas>
+        <div class="chart-overlay" id="waveOverlay">f = -- Hz · A = -- g</div>
+      </div>
+      <div class="metrics-grid">
+        <div class="metric-box">
+          <div class="label">主导频率</div>
+          <div class="value" id="domFreq">-- Hz</div>
+        </div>
+        <div class="metric-box">
+          <div class="label">振幅峰峰值</div>
+          <div class="value" id="ampDom">-- g</div>
+        </div>
+        <div class="metric-box">
+          <div class="label">估算位移</div>
+          <div class="value" id="displacement">-- m</div>
+        </div>
+        <div class="metric-box">
+          <div class="label">扭转角</div>
+          <div class="value" id="torsion">-- °</div>
+        </div>
+        <div class="metric-box">
+          <div class="label">置信度</div>
+          <div class="value" id="confidence">--%</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card danger-card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">危险程度报告</div>
+          <div class="card-subtitle">综合舞动与覆冰风险评估</div>
+        </div>
+        <span id="overallBadge" class="card-badge badge-safe">安全</span>
+      </div>
+      <div class="danger-report">
+        <div class="danger-level">
+          <div class="title">综合风险等级</div>
+          <div class="level safe" id="overallLevel">
+            <span class="dot" style="width:10px;height:10px;border-radius:50%;background:var(--success);"></span>
+            <span id="overallText">安全</span>
+          </div>
+          <div class="level-bar"><div class="level-fill safe" id="overallBar" style="width: 10%;"></div></div>
+        </div>
+        <div class="danger-level">
+          <div class="title">舞动风险</div>
+          <div class="level safe" id="gallopingLevel">
+            <span class="dot" style="width:10px;height:10px;border-radius:50%;background:var(--success);"></span>
+            <span id="gallopingText">等待数据</span>
+          </div>
+          <div class="level-bar"><div class="level-fill safe" id="gallopingBar" style="width: 0%;"></div></div>
+          <div class="desc" id="gallopingDesc">尚未收到舞动状态数据</div>
+        </div>
+        <div class="danger-level">
+          <div class="title">覆冰风险</div>
+          <div class="level safe" id="iceRiskLevel">
+            <span class="dot" style="width:10px;height:10px;border-radius:50%;background:var(--success);"></span>
+            <span id="iceRiskText">等待数据</span>
+          </div>
+          <div class="level-bar"><div class="level-fill safe" id="iceRiskBar" style="width: 0%;"></div></div>
+          <div class="desc" id="iceRiskDesc">等待环境数据</div>
+        </div>
+        <div class="recommendation" id="recommendation">
+          <strong>运行建议</strong>
+          <span id="recommendText">系统初始化完成，等待传感器数据接入。</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Secondary Grid: Environment / Ice / Vehicle -->
+  <section class="secondary-grid">
+    <div class="card env-card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">环境温湿度趋势</div>
+          <div class="card-subtitle">最近 60 个采样点</div>
+        </div>
+      </div>
+      <div class="env-stats">
+        <div class="env-stat">
+          <span class="label">温度</span>
+          <span class="value" id="tempValue">--.- °C</span>
+        </div>
+        <div class="env-stat">
+          <span class="label">湿度</span>
+          <span class="value" id="humidityValue">--.- %RH</span>
+        </div>
+      </div>
+      <div class="chart-wrapper small">
+        <canvas id="envChart"></canvas>
+      </div>
+      <div class="chart-legend">
+        <div class="legend-item"><span class="legend-dot" style="background:var(--danger);"></span>温度 (°C)</div>
+        <div class="legend-item"><span class="legend-dot" style="background:var(--ice);"></span>湿度 (%RH)</div>
+      </div>
+    </div>
+
+    <div class="card ice-card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">覆冰监测</div>
+          <div class="card-subtitle">基于温湿度综合判断</div>
+        </div>
+        <span id="iceBadge" class="card-badge badge-idle">评估中</span>
+      </div>
+      <div class="danger-report" style="margin-top:8px;">
+        <div class="danger-level">
+          <div class="title">覆冰指数</div>
+          <div class="level safe" id="iceIndexLevel">
+            <span id="iceIndexText">0 / 100</span>
+          </div>
+          <div class="level-bar"><div class="level-fill ice" id="iceIndexBar" style="width: 0%;"></div></div>
+        </div>
+        <div class="danger-level">
+          <div class="title">结冰条件</div>
+          <div class="desc" id="iceCondition">暂无足够环境数据</div>
+        </div>
+        <div class="danger-level">
+          <div class="title">建议动作</div>
+          <div class="desc" id="iceAction">继续监测温湿度变化</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card vehicle-card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">小车运动状态</div>
+          <div class="card-subtitle">除冰小车实时控制反馈</div>
+        </div>
+        <span id="motorBadge" class="card-badge badge-idle">停止</span>
+      </div>
+      <div class="vehicle-visual" id="vehicleVisual">
+        <div class="vehicle-state stop" id="motorState">
+          <span class="arrow"></span>
+          <span id="motorStateText">停止</span>
+        </div>
+        <div style="width:100%;">
+          <div class="position-track">
+            <div class="position-fill" id="positionFill" style="width: 0%;"></div>
+          </div>
+          <div class="position-labels">
+            <span>起点</span>
+            <span id="positionText">0%</span>
+            <span>终点</span>
+          </div>
+        </div>
+      </div>
+      <div class="danger-level" style="margin-top:12px;">
+        <div class="title">最后指令</div>
+        <div class="desc" id="lastCommand">无</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Control Panel -->
+  <section class="card control-card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">远程控制</div>
+        <div class="card-subtitle">向小车发送运动与加热指令</div>
+      </div>
+    </div>
+    <div class="control-grid">
+      <div class="control-group">
+        <span class="label">运动控制</span>
+        <div style="display:flex;gap:8px;">
+          <button class="btn forward" onclick="sendCmd('forward')">前进</button>
+          <button class="btn backward" onclick="sendCmd('backward')">后退</button>
+          <button class="btn stop" onclick="sendCmd('stop')">停止</button>
+        </div>
+      </div>
+      <div class="control-group">
+        <span class="label">加热除冰</span>
+        <div style="display:flex;gap:8px;">
+          <button class="btn heater" onclick="sendCmd('heater_on')">加热开启</button>
+          <button class="btn heater" onclick="sendCmd('heater_off')">加热关闭</button>
+        </div>
+      </div>
+      <div class="control-group" style="flex:1;min-width:240px;">
+        <span class="label">自定义命令</span>
+        <div class="command-box">
+          <input type="text" id="cmdInput" placeholder="输入命令后回车..." onkeydown="if(event.key==='Enter')sendCustomCmd()">
+          <button onclick="sendCustomCmd()">发送</button>
+        </div>
+      </div>
+    </div>
+    <div class="stats-bar" id="statsBar">
+      运行时间: -- | 消息总数: 0 | 接收字节: 0 | 心跳: --
+    </div>
+  </section>
+
+  <!-- Logs -->
+  <section class="card log-panel">
+    <div class="card-header">
+      <div>
+        <div class="card-title">实时日志</div>
+        <div class="card-subtitle">WebSocket 通信与事件记录</div>
+      </div>
+    </div>
+    <div class="log-container" id="logContainer"></div>
+  </section>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+// ================================================================
+// Configuration
+// ================================================================
+const MAX_HISTORY = 60;
+const WAVE_BUFFER_SIZE = 300;
+const SAMPLE_RATE = 30;
+
+let ws = null;
+let stats = { totalMessages: 0, bytesReceived: 0, startTime: Date.now() };
+let lastHeartbeat = null;
+let deviceConnected = false;
+
+const tempHistory = [];
+const humidityHistory = [];
+const waveBuffer = new Array(WAVE_BUFFER_SIZE).fill(0);
+let waveTime = 0;
+let lastGalloping = null;
+let lastEnv = null;
+let lastMotor = null;
+
+// ================================================================
+// WebSocket Connection
+// ================================================================
+function connectWS() {
+  const host = location.hostname || "localhost";
+  const wsUrl = `ws://${host}:8080`;
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    setConnStatus(true);
+    addLog("system", "WebSocket 已连接到桥接服务");
+    showToast("已连接到监测系统", "success");
+  };
+
+  ws.onmessage = (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch (e) { return; }
+    stats.totalMessages++;
+    stats.bytesReceived += event.data.length;
+    updateStats();
+    handleMessage(data);
+  };
+
+  ws.onclose = () => {
+    setConnStatus(false);
+    deviceConnected = false;
+    addLog("system", "WebSocket 断开，3秒后重连...");
+    showToast("连接已断开，正在重连...", "error");
+    setTimeout(connectWS, 3000);
+  };
+
+  ws.onerror = () => {
+    addLog("system", "WebSocket 连接错误");
+    showToast("WebSocket 连接错误", "error");
+  };
+}
+
+function setConnStatus(connected) {
+  const badge = document.getElementById("statusBadge");
+  const text = document.getElementById("statusText");
+  const connIcon = document.getElementById("connIcon");
+  const connStatus = document.getElementById("connStatus");
+
+  if (connected) {
+    badge.className = "status-pill online";
+    text.textContent = "已连接";
+    connIcon.className = "kpi-icon success";
+    connIcon.textContent = "OK";
+    connStatus.textContent = "WebSocket 正常";
+    connStatus.className = "kpi-value small ok";
+  } else {
+    badge.className = "status-pill offline";
+    text.textContent = "未连接";
+    connIcon.className = "kpi-icon danger";
+    connIcon.textContent = "!";
+    connStatus.textContent = "WebSocket 断开";
+    connStatus.className = "kpi-value small alert";
+    document.getElementById("deviceStatus").textContent = "Air778E: 未接入";
+  }
+}
+
+// ================================================================
+// Message Handling
+// ================================================================
+function handleMessage(data) {
+  if (!data.type) return;
+
+  switch (data.type) {
+    case "galloping":
+      handleGalloping(data);
+      break;
+    case "env":
+      handleEnv(data);
+      break;
+    case "motor":
+      handleMotor(data);
+      break;
+    case "heartbeat":
+      lastHeartbeat = Date.now();
+      updateStats();
+      addLog("heartbeat", `心跳 tick=${data.ts}`);
+      break;
+    case "system":
+      handleSystem(data);
+      break;
+    case "raw":
+      addLog("system", `原始数据: ${data.data}`);
+      break;
+  }
+}
+
+const stateConfig = {
+  IDLE:    { label: "静止", color: "safe", desc: "电缆处于静止状态" },
+  BREEZE:  { label: "微风振动", color: "safe", desc: "微风引起的轻微振动，风险较低" },
+  MODERATE:{ label: "中等舞动", color: "warn", desc: "舞动幅度中等，建议持续关注" },
+  SEVERE:  { label: "剧烈舞动", color: "danger", desc: "舞动剧烈，存在线路损伤风险" },
+  ICE:     { label: "覆冰舞动", color: "ice", desc: "覆冰导致舞动，建议启动除冰" },
+};
+
+function handleGalloping(d) {
+  lastGalloping = d;
+  const state = d.state || "IDLE";
+  const cfg = stateConfig[state] || stateConfig.IDLE;
+
+  const liveBadge = document.getElementById("liveBadge");
+  liveBadge.className = `card-badge badge-${cfg.color === "ice" ? "danger" : cfg.color === "warn" ? "warn" : cfg.color === "danger" ? "danger" : "live"}`;
+  liveBadge.textContent = cfg.label;
+
+  document.getElementById("domFreq").textContent = (d.dominant_freq || 0).toFixed(3) + " Hz";
+  document.getElementById("ampDom").textContent = (d.amp_dominant || 0).toFixed(3) + " g";
+  document.getElementById("displacement").textContent = (d.displacement_est || 0).toFixed(4) + " m";
+  document.getElementById("torsion").textContent = (d.torsion_deg || 0).toFixed(1) + " °";
+  document.getElementById("confidence").textContent = ((d.confidence || 0) * 100).toFixed(0) + "%";
+
+  document.getElementById("waveOverlay").textContent =
+    `f = ${(d.dominant_freq || 0).toFixed(2)} Hz · A = ${(d.amp_dominant || 0).toFixed(3)} g`;
+
+  // If raw samples provided, push them into wave buffer
+  if (Array.isArray(d.samples) && d.samples.length > 0) {
+    for (const sample of d.samples) {
+      waveBuffer.push(sample);
+      if (waveBuffer.length > WAVE_BUFFER_SIZE) waveBuffer.shift();
+    }
+  }
+
+  updateDangerReport();
+  addLog("galloping", `state=${state} amp=${(d.amp_dominant||0).toFixed(3)}g freq=${(d.dominant_freq||0).toFixed(2)}Hz disp=${(d.displacement_est||0).toFixed(4)}m`);
+}
+
+function handleEnv(d) {
+  lastEnv = d;
+  const temp = d.temperature || 0;
+  const hum = d.humidity || 0;
+
+  tempHistory.push(temp);
+  if (tempHistory.length > MAX_HISTORY) tempHistory.shift();
+  humidityHistory.push(hum);
+  if (humidityHistory.length > MAX_HISTORY) humidityHistory.shift();
+
+  document.getElementById("tempValue").textContent = temp.toFixed(1) + " °C";
+  document.getElementById("humidityValue").textContent = hum.toFixed(1) + " %RH";
+  document.getElementById("kpiTemp").textContent = temp.toFixed(1) + " °C";
+  document.getElementById("kpiHumidity").textContent = "湿度 " + hum.toFixed(1) + " %RH";
+
+  const kpiTemp = document.getElementById("kpiTemp");
+  kpiTemp.className = "kpi-value";
+  if (temp < 0) kpiTemp.classList.add("alert");
+  else if (temp < 5) kpiTemp.classList.add("warn");
+  else kpiTemp.classList.add("ok");
+
+  updateIceReport();
+  updateDangerReport();
+  addLog("env", `温度=${temp.toFixed(1)}°C 湿度=${hum.toFixed(1)}%RH`);
+}
+
+function handleMotor(d) {
+  lastMotor = d;
+  const state = d.motor_state || "stop";
+  const position = d.position || 0;
+
+  document.getElementById("motorStateText").textContent = state === "forward" ? "前进中" : state === "backward" ? "后退中" : "停止";
+  document.getElementById("kpiPosition").textContent = position + "%";
+  document.getElementById("kpiMotorState").textContent = state === "forward" ? "电机前进" : state === "backward" ? "电机后退" : "电机停止";
+  document.getElementById("positionFill").style.width = position + "%";
+  document.getElementById("positionText").textContent = position + "%";
+
+  const motorState = document.getElementById("motorState");
+  const visual = document.getElementById("vehicleVisual");
+  motorState.className = "vehicle-state " + state;
+  visual.className = "vehicle-visual";
+
+  const motorBadge = document.getElementById("motorBadge");
+  if (state === "forward") { motorBadge.className = "card-badge badge-safe"; motorBadge.textContent = "前进"; }
+  else if (state === "backward") { motorBadge.className = "card-badge badge-warn"; motorBadge.textContent = "后退"; }
+  else { motorBadge.className = "card-badge badge-idle"; motorBadge.textContent = "停止"; }
+
+  addLog("motor", `电机=${state} 位置=${position}%`);
+}
+
+function handleSystem(d) {
+  switch (d.event) {
+    case "ws_connected":
+      addLog("system", d.message || "已连接");
+      if (d.stats) {
+        stats.totalMessages = d.stats.totalMessages || 0;
+        stats.bytesReceived = d.stats.bytesReceived || 0;
+      }
+      break;
+    case "device_connected":
+      deviceConnected = true;
+      document.getElementById("deviceStatus").textContent = `Air778E: 已接入 (${d.remote || "unknown"})`;
+      document.getElementById("deviceStatus").style.color = "var(--success)";
+      addLog("system", `Air778E 设备已连接 (${d.remote || "unknown"})`);
+      showToast("Air778E 设备已接入", "success");
+      break;
+    case "device_disconnected":
+      deviceConnected = false;
+      document.getElementById("deviceStatus").textContent = "Air778E: 已断开";
+      document.getElementById("deviceStatus").style.color = "var(--danger)";
+      addLog("system", "Air778E 设备断开");
+      showToast("Air778E 设备已断开", "error");
+      break;
+    case "command_sent":
+      document.getElementById("lastCommand").textContent = d.command;
+      addLog("system", `命令已发送: ${d.command}`);
+      break;
+    case "command_failed":
+      addLog("system", `命令发送失败: ${d.reason}`);
+      showToast(`命令发送失败: ${d.reason}`, "error");
+      break;
+  }
+}
+
+// ================================================================
+// Danger & Ice Reports
+// ================================================================
+function updateDangerReport() {
+  if (!lastGalloping) return;
+
+  const state = lastGalloping.state || "IDLE";
+  const cfg = stateConfig[state] || stateConfig.IDLE;
+  const amp = lastGalloping.amp_dominant || 0;
+  const conf = (lastGalloping.confidence || 0) * 100;
+
+  // Galloping risk level 0-100
+  let gallopingScore = 0;
+  if (state === "SEVERE") gallopingScore = 95;
+  else if (state === "MODERATE") gallopingScore = 60;
+  else if (state === "BREEZE") gallopingScore = 25;
+  else if (state === "ICE") gallopingScore = 90;
+  else gallopingScore = 5;
+
+  if (amp > 5) gallopingScore = Math.max(gallopingScore, 85);
+  else if (amp > 2) gallopingScore = Math.max(gallopingScore, 50);
+
+  setLevel("galloping", gallopingScore, cfg.color);
+  document.getElementById("gallopingText").textContent = cfg.label;
+  document.getElementById("gallopingDesc").textContent = cfg.desc + `（置信度 ${conf.toFixed(0)}%）`;
+
+  // Ice risk score
+  const iceScore = computeIceScore();
+  let overallScore = Math.max(gallopingScore, iceScore);
+  let overallColor = "safe";
+  if (overallScore >= 70) overallColor = "danger";
+  else if (overallScore >= 40) overallColor = "warn";
+  else if (iceScore > 50) overallColor = "ice";
+
+  setLevel("overall", overallScore, overallColor);
+  document.getElementById("overallText").textContent = overallScore >= 70 ? "危险" : overallScore >= 40 ? "预警" : overallScore >= 20 ? "注意" : "安全";
+  document.getElementById("overallBadge").className = `card-badge badge-${overallColor === "ice" ? "ice" : overallColor}`;
+  document.getElementById("overallBadge").textContent = overallScore >= 70 ? "危险" : overallScore >= 40 ? "预警" : "安全";
+
+  updateRecommendation(overallScore, gallopingScore, iceScore, state);
+}
+
+function updateIceReport() {
+  if (!lastEnv) return;
+  const score = computeIceScore();
+  const temp = lastEnv.temperature || 0;
+  const hum = lastEnv.humidity || 0;
+
+  let levelText = "";
+  let condition = "";
+  let action = "";
+  let color = "safe";
+
+  if (score >= 80) { levelText = "极高"; condition = `温度 ${temp.toFixed(1)}°C 低于冰点且湿度 ${hum.toFixed(1)}% 高，极易覆冰`; action = "建议立即启动加热除冰并降低小车运行速度"; color = "danger"; }
+  else if (score >= 50) { levelText = "较高"; condition = `温度接近冰点 (${temp.toFixed(1)}°C)，湿度 ${hum.toFixed(1)}%`; action = "建议持续监测并准备加热除冰"; color = "warn"; }
+  else if (score >= 20) { levelText = "较低"; condition = `温度 ${temp.toFixed(1)}°C，湿度 ${hum.toFixed(1)}%`; action = "保持常规监测"; color = "safe"; }
+  else { levelText = "无风险"; condition = `温度 ${temp.toFixed(1)}°C，湿度 ${hum.toFixed(1)}%`; action = "当前无结冰风险"; color = "safe"; }
+
+  setLevel("iceIndex", score, color === "ice" ? "ice" : color);
+  document.getElementById("iceIndexText").textContent = `${Math.round(score)} / 100`;
+  document.getElementById("iceLevelText").textContent = levelText;
+  document.getElementById("iceLevelText").className = `kpi-value ice ${color === "danger" ? "alert" : color === "warn" ? "warn" : ""}`;
+  document.getElementById("iceMeta").textContent = condition;
+  document.getElementById("iceCondition").textContent = condition;
+  document.getElementById("iceAction").textContent = action;
+  document.getElementById("iceBadge").className = `card-badge badge-${color === "ice" ? "ice" : color}`;
+  document.getElementById("iceBadge").textContent = levelText;
+
+  setLevel("iceRisk", score, color === "ice" ? "ice" : color);
+  document.getElementById("iceRiskText").textContent = levelText;
+  document.getElementById("iceRiskDesc").textContent = condition;
+}
+
+function computeIceScore() {
+  if (!lastEnv) return 0;
+  const temp = lastEnv.temperature || 0;
+  const hum = lastEnv.humidity || 0;
+  let score = 0;
+  if (temp < -5) score += 40;
+  else if (temp < 0) score += 30;
+  else if (temp < 2) score += 15;
+  if (hum > 90) score += 40;
+  else if (hum > 80) score += 25;
+  else if (hum > 65) score += 10;
+  return Math.min(score, 100);
+}
+
+function setLevel(prefix, score, color) {
+  const level = document.getElementById(prefix + "Level");
+  const bar = document.getElementById(prefix + "Bar");
+  if (level) {
+    level.className = "level " + color;
+    const dot = level.querySelector(".dot");
+    if (dot) dot.style.background = getColorValue(color);
+  }
+  if (bar) {
+    bar.className = "level-fill " + color;
+    bar.style.width = score + "%";
+  }
+}
+
+function getColorValue(color) {
+  if (color === "success" || color === "safe") return "var(--success)";
+  if (color === "warning" || color === "warn") return "var(--warning)";
+  if (color === "danger") return "var(--danger)";
+  if (color === "ice") return "var(--ice)";
+  return "var(--text-muted)";
+}
+
+function updateRecommendation(overall, galloping, ice, state) {
+  const text = document.getElementById("recommendText");
+  if (overall >= 70) {
+    text.textContent = "当前风险等级较高，建议立即启动除冰小车并开启加热，同时降低线路负载并通知巡检人员。";
+  } else if (overall >= 40) {
+    text.textContent = "风险处于预警区间，建议密切监测波形变化，必要时预热除冰设备并准备干预。";
+  } else if (ice > 30) {
+    text.textContent = "当前覆冰风险开始累积，建议保持环境数据监测频率，关注温度是否进一步下降。";
+  } else if (state === "BREEZE") {
+    text.textContent = "仅检测到微风振动，属正常运行状态，继续监测即可。";
+  } else {
+    text.textContent = "系统运行平稳，各项风险指标均在安全范围内。";
+  }
+}
+
+// ================================================================
+// Commands
+// ================================================================
+function sendCmd(cmd) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    showToast("WebSocket 未连接，无法发送命令", "error");
+    return;
+  }
+  ws.send(cmd);
+  document.getElementById("lastCommand").textContent = cmd;
+  addLog("system", `发送命令: ${cmd}`);
+}
+
+function sendCustomCmd() {
+  const input = document.getElementById("cmdInput");
+  const cmd = input.value.trim();
+  if (cmd) {
+    sendCmd(cmd);
+    input.value = "";
+  }
+}
+
+// ================================================================
+// Logs & Toast
+// ================================================================
+function addLog(tag, msg) {
+  const container = document.getElementById("logContainer");
+  const entry = document.createElement("div");
+  entry.className = "log-entry";
+  const ts = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  const tagClass = `tag-${tag}`;
+  entry.innerHTML = `<span class="ts">${ts}</span><span class="tag ${tagClass}">${tag.toUpperCase()}</span><span class="msg">${escapeHtml(msg)}</span>`;
+  container.insertBefore(entry, container.firstChild);
+  while (container.children.length > 200) container.removeChild(container.lastChild);
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+let toastTimer = null;
+function showToast(msg, type) {
+  const toast = document.getElementById("toast");
+  toast.textContent = msg;
+  toast.className = `toast ${type} show`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.classList.remove("show"); }, 3000);
+}
+
+// ================================================================
+// Stats
+// ================================================================
+function updateStats() {
+  const uptime = Math.floor((Date.now() - stats.startTime) / 1000);
+  const min = Math.floor(uptime / 60);
+  const sec = uptime % 60;
+  let hbText = "--";
+  if (lastHeartbeat) {
+    const ago = Math.floor((Date.now() - lastHeartbeat) / 1000);
+    hbText = ago < 60 ? `${ago}s 前` : `${Math.floor(ago/60)}m 前`;
+  }
+  document.getElementById("statsBar").textContent =
+    `运行时间: ${min}m${sec}s | 消息总数: ${stats.totalMessages} | 接收字节: ${stats.bytesReceived} | 心跳: ${hbText}`;
+}
+setInterval(updateStats, 1000);
+
+// ================================================================
+// Charts
+// ================================================================
+function resizeCanvas(canvas) {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(rect.width * dpr);
+  canvas.height = Math.floor(rect.height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w: rect.width, h: rect.height };
+}
+
+function drawWaveChart() {
+  const canvas = document.getElementById("waveChart");
+  const { ctx, w, h } = resizeCanvas(canvas);
+
+  ctx.clearRect(0, 0, w, h);
+
+  // Grid
+  ctx.strokeStyle = "rgba(255,255,255,0.05)";
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 4; i++) {
+    const y = (i / 4) * h;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+  for (let i = 1; i < 6; i++) {
+    const x = (i / 6) * w;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+  }
+
+  // Zero line
+  ctx.strokeStyle = "rgba(59, 130, 246, 0.3)";
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(0, h/2); ctx.lineTo(w, h/2); ctx.stroke();
+  ctx.setLineDash([]);
+
+  if (waveBuffer.length < 2) return;
+
+  const maxAmp = Math.max(0.1, ...waveBuffer.map(Math.abs));
+  const scaleY = (h / 2 - 16) / maxAmp;
+
+  // Area fill
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, "rgba(59, 130, 246, 0.35)");
+  grad.addColorStop(0.5, "rgba(59, 130, 246, 0.05)");
+  grad.addColorStop(1, "rgba(59, 130, 246, 0.0)");
+
+  ctx.beginPath();
+  waveBuffer.forEach((v, i) => {
+    const x = (i / (waveBuffer.length - 1)) * w;
+    const y = h / 2 - v * scaleY;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.lineTo(w, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.strokeStyle = "#60a5fa";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  waveBuffer.forEach((v, i) => {
+    const x = (i / (waveBuffer.length - 1)) * w;
+    const y = h / 2 - v * scaleY;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+function drawEnvChart() {
+  const canvas = document.getElementById("envChart");
+  const { ctx, w, h } = resizeCanvas(canvas);
+  ctx.clearRect(0, 0, w, h);
+
+  if (tempHistory.length < 2) {
+    ctx.fillStyle = "rgba(255,255,255,0.1)";
+    ctx.font = "12px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("等待环境数据...", w/2, h/2);
+    return;
+  }
+
+  // Grid
+  ctx.strokeStyle = "rgba(255,255,255,0.05)";
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 4; i++) {
+    const y = (i / 4) * h;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+
+  drawLineSeries(ctx, w, h, tempHistory, "#ef4444", 10);
+  drawLineSeries(ctx, w, h, humidityHistory, "#22d3ee", 10);
+}
+
+function drawLineSeries(ctx, w, h, data, color, padding) {
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = Math.max(0.01, max - min);
+  const usableH = h - padding * 2;
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  data.forEach((v, i) => {
+    const x = (i / (MAX_HISTORY - 1)) * w;
+    const y = padding + usableH - ((v - min) / range) * usableH;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Dots at last point
+  const lastX = w;
+  const lastY = padding + usableH - ((data[data.length-1] - min) / range) * usableH;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(lastX - 2, lastY, 3, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// ================================================================
+// Animation Loop: synthesize waveform if no raw samples provided
+// ================================================================
+function updateWave() {
+  if (lastGalloping) {
+    const freq = lastGalloping.dominant_freq || 0.5;
+    const amp = lastGalloping.amp_dominant || 0;
+    const sample = amp * Math.sin(2 * Math.PI * freq * waveTime / SAMPLE_RATE) + (Math.random() - 0.5) * amp * 0.1;
+    waveBuffer.push(sample);
+    if (waveBuffer.length > WAVE_BUFFER_SIZE) waveBuffer.shift();
+  } else {
+    waveBuffer.push((Math.random() - 0.5) * 0.05);
+    if (waveBuffer.length > WAVE_BUFFER_SIZE) waveBuffer.shift();
+  }
+  waveTime++;
+}
+
+function renderLoop() {
+  updateWave();
+  drawWaveChart();
+  drawEnvChart();
+  requestAnimationFrame(renderLoop);
+}
+
+// ================================================================
+// Init
+// ================================================================
+connectWS();
+addLog("system", "RT_SPARK 监测系统已启动，正在连接 WebSocket...");
+renderLoop();
+
+window.addEventListener("resize", () => { drawWaveChart(); drawEnvChart(); });
+</script>
+
+</body>
+</html>
