@@ -6,220 +6,193 @@
  * Change Logs:
  * Date           Author        Notes
  * 2026-06-25     Administrator the first version
- * 2026-07-18     Administrator fix: use polling read instead of INT_RX
+ * 2026-07-18     Administrator fix: rewrite to I2C mode (BNO055 UART binary protocol failed)
  */
 #include "gy_bn0055.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 
-/* BNO055 使用 UART1(PA9/PA10)，RX 读取传感器数据，TX 留给控制台输出 JSON */
-#define UART_NAME       "uart1"
-#define UART_BAUDRATE   115200   /* 必须与控制台波特率一致，否则会破坏控制台输出 */
-/* BNO055 UART 帧最长约 120 字节，留足裕量 */
-#define BUF_SIZE        256
-#define LINE_BUF_SIZE   200
+/* BNO055 使用 I2C1（与 SHT3X 共用），地址 0x28（ADR=GND）
+ * 如果硬件 ADR 接 VCC，请改为 0x29 */
+#define BNO055_I2C_BUS_NAME  "i2c1"
+#define BNO055_ADDR          0x28
 
-static rt_device_t uart_dev    = RT_NULL;
-static int         uart_baud   = 115200;
+/* BNO055 寄存器定义 */
+#define BNO055_CHIP_ID       0x00
+#define BNO055_PAGE_ID       0x07
+#define BNO055_ACC_DATA_X_LSB 0x08
+#define BNO055_MAG_DATA_X_LSB 0x0E
+#define BNO055_GYR_DATA_X_LSB 0x14
+#define BNO055_EUL_HEADING_LSB 0x1A
+#define BNO055_QUAT_DATA_W_LSB 0x20
+#define BNO055_OPR_MODE      0x3D
+#define BNO055_PWR_MODE      0x3E
+#define BNO055_SYS_TRIGGER   0x3F
+
+/* 操作模式 */
+#define BNO055_MODE_CONFIG   0x00
+#define BNO055_MODE_NDOF     0x0C
+
+static struct rt_i2c_bus_device *i2c_dev = RT_NULL;
 
 /**
- * @brief 从 UART 轮询读取一行（以 '\r' 或 '\n' 为结束符，超时 timeout_ms）
- * @return 读取到的有效字符数（不含终止符）；0 表示超时/无数据
+ * @brief I2C 读取 BNO055 寄存器
  */
-static int read_uart_line(char *line, int max_len, int timeout_ms)
+static int bno055_read_reg(uint8_t reg, uint8_t *buf, uint8_t len)
 {
-    int       pos = 0;
-    char      ch;
-    rt_tick_t start    = rt_tick_get();
-    rt_tick_t deadline = start + rt_tick_from_millisecond(timeout_ms);
+    struct rt_i2c_msg msgs[2];
 
-    while (pos < max_len - 1) {
-        if (rt_tick_get() >= deadline) {
-            break;
-        }
+    msgs[0].addr  = BNO055_ADDR;
+    msgs[0].flags = RT_I2C_WR;
+    msgs[0].buf   = &reg;
+    msgs[0].len   = 1;
 
-        /* 轮询读取一个字节 */
-        if (rt_device_read(uart_dev, 0, &ch, 1) == 1) {
-            if (ch == '\r' || ch == '\n') {
-                if (pos > 0) {
-                    line[pos] = '\0';
-                    return pos;
-                }
-                /* 前导 \r\n，跳过 */
-                continue;
-            }
-            line[pos++] = ch;
-            if (pos >= max_len - 1) {
-                line[pos] = '\0';
-                return pos;
-            }
-        } else {
-            /* 无数据，短暂等待 */
-            rt_thread_mdelay(5);
-        }
-    }
+    msgs[1].addr  = BNO055_ADDR;
+    msgs[1].flags = RT_I2C_RD;
+    msgs[1].buf   = buf;
+    msgs[1].len   = len;
 
-    line[pos] = '\0';
-    return pos;  /* 可能为 0（纯超时） */
+    return rt_i2c_transfer(i2c_dev, msgs, 2);
 }
 
 /**
- * @brief 解析 BNO055 UART 数据帧
- * 期望格式：
- *   $BNO055,ACC=ax,ay,az,GYR=gx,gy,gz,MAG=mx,my,mz,EUL=h,r,p,QUAT=w,x,y,z*CS
+ * @brief I2C 写入 BNO055 寄存器
  */
-static int parse_bn0055_frame(const char *line, bn0055_data_t *data)
+static int bno055_write_reg(uint8_t reg, uint8_t val)
 {
-    char  buffer[LINE_BUF_SIZE];
-    char *token;
-    char *saveptr;
+    struct rt_i2c_msg msg;
+    uint8_t buf[2] = {reg, val};
 
-    int  parsed_count = 0;
-    int  field        = -1;  /* 0=ACC 1=GYR 2=MAG 3=EUL 4=QUAT */
-    int  sub_idx      = 0;
+    msg.addr  = BNO055_ADDR;
+    msg.flags = RT_I2C_WR;
+    msg.buf   = buf;
+    msg.len   = 2;
 
-    if (line == NULL || data == NULL) return -1;
-    if (strncmp(line, "$BNO055", 7) != 0) return -1;
-
-    strncpy(buffer, line, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-
-    /* 去掉校验和 "*XX" */
-    char *star = strrchr(buffer, '*');
-    if (star) *star = '\0';
-
-    token = strtok_r(buffer, ",", &saveptr);
-    while (token != NULL) {
-        const char *val_str = NULL;
-
-        if (strncmp(token, "ACC=", 4) == 0) {
-            field = 0; sub_idx = 0; val_str = token + 4; parsed_count++;
-        } else if (strncmp(token, "GYR=", 4) == 0) {
-            field = 1; sub_idx = 0; val_str = token + 4; parsed_count++;
-        } else if (strncmp(token, "MAG=", 4) == 0) {
-            field = 2; sub_idx = 0; val_str = token + 4; parsed_count++;
-        } else if (strncmp(token, "EUL=", 4) == 0) {
-            field = 3; sub_idx = 0; val_str = token + 4; parsed_count++;
-        } else if (strncmp(token, "QUAT=", 5) == 0) {
-            field = 4; sub_idx = 0; val_str = token + 5; parsed_count++;
-        } else if (strncmp(token, "$BNO055", 7) == 0) {
-            /* 跳过帧头 */
-        } else {
-            val_str = token;
-        }
-
-        if (val_str != NULL && field >= 0) {
-            float val = (float)atof(val_str);
-            switch (field) {
-                case 0:
-                    if (sub_idx == 0) data->accel_x = val;
-                    else if (sub_idx == 1) data->accel_y = val;
-                    else if (sub_idx == 2) data->accel_z = val;
-                    break;
-                case 1:
-                    if (sub_idx == 0) data->gyro_x = val;
-                    else if (sub_idx == 1) data->gyro_y = val;
-                    else if (sub_idx == 2) data->gyro_z = val;
-                    break;
-                case 2:
-                    if (sub_idx == 0) data->mag_x = val;
-                    else if (sub_idx == 1) data->mag_y = val;
-                    else if (sub_idx == 2) data->mag_z = val;
-                    break;
-                case 3:
-                    if (sub_idx == 0) data->euler_heading = val;
-                    else if (sub_idx == 1) data->euler_roll  = val;
-                    else if (sub_idx == 2) data->euler_pitch = val;
-                    break;
-                case 4:
-                    if (sub_idx == 0) data->quaternion_w = val;
-                    else if (sub_idx == 1) data->quaternion_x = val;
-                    else if (sub_idx == 2) data->quaternion_y = val;
-                    else if (sub_idx == 3) data->quaternion_z = val;
-                    break;
-                default: break;
-            }
-            sub_idx++;
-        }
-
-        token = strtok_r(NULL, ",", &saveptr);
-    }
-
-    return (parsed_count >= 3) ? RT_EOK : -RT_ERROR;
+    return rt_i2c_transfer(i2c_dev, &msg, 1);
 }
 
 /**
- * @brief 读取一帧 BNO055 数据
- *        直接轮询读取 UART RX 数据（模块可能自动循环发送）
- *        不发送任何命令，避免干扰模块自动输出
+ * @brief 读取 int16 小端数据
+ */
+static int16_t bno055_int16_le(const uint8_t *buf)
+{
+    return (int16_t)(buf[0] | ((uint16_t)buf[1] << 8));
+}
+
+/**
+ * @brief 读取 BNO055 全部数据（加速度、陀螺仪、磁力计、欧拉角、四元数）
  */
 int bn0055_read(bn0055_data_t *data)
 {
-    char line[LINE_BUF_SIZE];
-    int  len;
-    int  retry = 5;
+    uint8_t buf[24];
+    int ret;
+    int16_t raw;
 
-    if (data == RT_NULL || uart_dev == RT_NULL) return -RT_ERROR;
+    if (data == RT_NULL || i2c_dev == RT_NULL) return -RT_ERROR;
 
-    while (retry-- > 0) {
-        /* 直接轮询读取，超时 2000ms（模块自动发送间隔可能较长） */
-        len = read_uart_line(line, sizeof(line), 2000);
-        if (len > 0) {
-            rt_kprintf("[BN0055] Raw: len=%d, raw=%.60s\n", len, line);
-            if (parse_bn0055_frame(line, data) == RT_EOK) {
-                data->error = 0;
-                return RT_EOK;
-            }
-        }
+    memset(data, 0, sizeof(bn0055_data_t));
+
+    /* 1. 读取加速度 (6 bytes from 0x08) */
+    ret = bno055_read_reg(BNO055_ACC_DATA_X_LSB, buf, 6);
+    if (ret == 1) {
+        raw = bno055_int16_le(&buf[0]); data->accel_x = raw * 0.01f;   /* 1 LSB = 1 mg ≈ 0.01 m/s² */
+        raw = bno055_int16_le(&buf[2]); data->accel_y = raw * 0.01f;
+        raw = bno055_int16_le(&buf[4]); data->accel_z = raw * 0.01f;
+    } else {
+        rt_kprintf("[BN0055] I2C read ACC failed (ret=%d)\n", ret);
     }
 
-    return -RT_ERROR;
-}
+    /* 2. 读取磁力计 (6 bytes from 0x0E) */
+    ret = bno055_read_reg(BNO055_MAG_DATA_X_LSB, buf, 6);
+    if (ret == 1) {
+        raw = bno055_int16_le(&buf[0]); data->mag_x = raw * 0.0625f;  /* 1 LSB = 1/16 uT */
+        raw = bno055_int16_le(&buf[2]); data->mag_y = raw * 0.0625f;
+        raw = bno055_int16_le(&buf[4]); data->mag_z = raw * 0.0625f;
+    }
 
-/**
- * @brief 设置 BNO055 工作模式
- */
-int bn0055_set_mode(uint8_t mode)
-{
-    char cmd[16];
-    int  len;
+    /* 3. 读取陀螺仪 (6 bytes from 0x14) */
+    ret = bno055_read_reg(BNO055_GYR_DATA_X_LSB, buf, 6);
+    if (ret == 1) {
+        raw = bno055_int16_le(&buf[0]); data->gyro_x = raw * 0.0625f; /* 1 LSB = 1/16 deg/s */
+        raw = bno055_int16_le(&buf[2]); data->gyro_y = raw * 0.0625f;
+        raw = bno055_int16_le(&buf[4]); data->gyro_z = raw * 0.0625f;
+    }
 
-    if (uart_dev == RT_NULL) return -RT_ERROR;
+    /* 4. 读取欧拉角 (6 bytes from 0x1A) */
+    ret = bno055_read_reg(BNO055_EUL_HEADING_LSB, buf, 6);
+    if (ret == 1) {
+        raw = bno055_int16_le(&buf[0]); data->euler_heading = raw * 0.0625f; /* 1 LSB = 1/16 deg */
+        raw = bno055_int16_le(&buf[2]); data->euler_roll    = raw * 0.0625f;
+        raw = bno055_int16_le(&buf[4]); data->euler_pitch   = raw * 0.0625f;
+    }
 
-    len = rt_snprintf(cmd, sizeof(cmd), "MODE=%d\r\n", mode);
-    rt_device_write(uart_dev, 0, cmd, len);
-    rt_thread_mdelay(100);
+    /* 5. 读取四元数 (8 bytes from 0x20) */
+    ret = bno055_read_reg(BNO055_QUAT_DATA_W_LSB, buf, 8);
+    if (ret == 1) {
+        data->quaternion_w = bno055_int16_le(&buf[0]) * 0.000061035f; /* 1/2^14 */
+        data->quaternion_x = bno055_int16_le(&buf[2]) * 0.000061035f;
+        data->quaternion_y = bno055_int16_le(&buf[4]) * 0.000061035f;
+        data->quaternion_z = bno055_int16_le(&buf[6]) * 0.000061035f;
+    }
 
-    rt_kprintf("BN0055: set mode %d\n", mode);
+    data->error = 0;
     return RT_EOK;
 }
 
 /**
- * @brief 初始化 GY-BN0055（UART1，115200，PA9/PA10）
- *        使用轮询读取，不依赖 RX 中断，避免与控制台冲突
- *        不重新配置波特率（控制台已配置为 115200），避免破坏控制台输出
+ * @brief 设置 BNO055 工作模式（通过 I2C）
+ */
+int bn0055_set_mode(uint8_t mode)
+{
+    if (i2c_dev == RT_NULL) return -RT_ERROR;
+
+    /* 先切换到 CONFIG_MODE，再切换到目标模式（BNO055 要求） */
+    bno055_write_reg(BNO055_OPR_MODE, BNO055_MODE_CONFIG);
+    rt_thread_mdelay(20);
+    bno055_write_reg(BNO055_OPR_MODE, mode);
+    rt_thread_mdelay(100);
+
+    rt_kprintf("BN0055: I2C set mode 0x%02X\n", mode);
+    return RT_EOK;
+}
+
+/**
+ * @brief 初始化 GY-BN0055（I2C 模式）
+ *        使用 I2C1 总线，与 SHT3X 共用（PD8/PD10）
  */
 int bn0055_init(void)
 {
-    rt_err_t ret;
+    uint8_t chip_id = 0;
+    int ret;
 
-    /* 1. 查找 UART 设备 */
-    uart_dev = rt_device_find(UART_NAME);
-    if (uart_dev == RT_NULL) {
-        rt_kprintf("BN0055: UART '%s' not found!\n", UART_NAME);
+    /* 1. 查找 I2C 总线 */
+    i2c_dev = (struct rt_i2c_bus_device *)rt_device_find(BNO055_I2C_BUS_NAME);
+    if (i2c_dev == RT_NULL) {
+        rt_kprintf("BN0055: I2C bus '%s' not found!\n", BNO055_I2C_BUS_NAME);
         return -RT_ERROR;
     }
-    rt_kprintf("BN0055: UART '%s' found\n", UART_NAME);
+    rt_kprintf("BN0055: I2C bus '%s' found\n", BNO055_I2C_BUS_NAME);
 
-    /* 2. 打开 UART（轮询读写模式）
-     *    不调用 RT_DEVICE_CTRL_CONFIG，避免改变控制台波特率配置 */
-    ret = rt_device_open(uart_dev, RT_DEVICE_OFLAG_RDWR);
-    if (ret != RT_EOK) {
-        rt_kprintf("BN0055: Failed to open UART (ret=%d)\n", ret);
+    /* 2. 读取 CHIP_ID 验证设备 */
+    ret = bno055_read_reg(BNO055_CHIP_ID, &chip_id, 1);
+    if (ret != 1) {
+        rt_kprintf("BN0055: I2C read CHIP_ID failed (ret=%d)\n", ret);
         return -RT_ERROR;
     }
+    if (chip_id != 0xA0) {
+        rt_kprintf("BN0055: CHIP_ID error! got 0x%02X, expected 0xA0\n", chip_id);
+        return -RT_ERROR;
+    }
+    rt_kprintf("BN0055: CHIP_ID OK (0xA0)\n");
 
-    rt_kprintf("BN0055: Init OK (baudrate=%d, polling mode, no reconfig)\n", UART_BAUDRATE);
+    /* 3. 设置 PWR_MODE = NORMAL */
+    bno055_write_reg(BNO055_PWR_MODE, 0x00);
+    rt_thread_mdelay(10);
+
+    /* 4. 设置 OPR_MODE = NDOF（9 轴融合模式） */
+    bn0055_set_mode(BNO055_MODE_NDOF);
+
+    rt_kprintf("BN0055: Init OK (I2C mode, addr=0x%02X, NDOF mode)\n", BNO055_ADDR);
     return RT_EOK;
 }
