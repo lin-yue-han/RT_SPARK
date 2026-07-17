@@ -1,125 +1,58 @@
 /*
- * main.c - DTU 桥接固件 v3（简化版：固定 115200，打印原始 hex）
+ * main.c - DTU 纯硬件透传桥接固件 v4
  *
- * 硬件：
- *   UART1 (PA9/PA10) → ST-Link COM9（控制台）
- *   UART2 (PA2/PA3)   → DTU 模块
+ * 功能：STM32 UART1 ↔ UART2 纯字节转发，不做任何解析。
+ *        电脑 COM9 (UART1) 的数据直接发到 DTU (UART2)，
+ *        DTU (UART2) 的回复直接回电脑 COM9 (UART1)。
  *
- * 功能：
- *   - 上电后 DTU UART2 固定 115200
- *   - DTU 收到的一切数据以 hex 形式打印（可看到乱码的真实字节）
- *   - dtu_send 命令发数据
+ * 注意：此固件不启动 FinSH、不启动任何传感器/电机/加热片。
+ *       上电后立即开始双向转发。
  */
 
 #include <rtthread.h>
 #include <rtdevice.h>
 #include <board.h>
-#include <string.h>
 
-#define DTU_UART_NAME   "uart2"
-#define BUF_SIZE        256
+#define BUF_SIZE 256
 
-static rt_device_t g_dtu_uart = RT_NULL;
+static rt_device_t g_uart1 = RT_NULL;
+static rt_device_t g_uart2 = RT_NULL;
 
 /* ================================================================
- * DTU 接收线程 —— 十六进制打印，不丢失任何信息
+ * UART1 → UART2 转发线程
  * ================================================================ */
 
-static void dtu_recv_thread_entry(void *parameter)
+static void uart1_to_uart2_entry(void *parameter)
 {
     unsigned char buf[BUF_SIZE];
+    rt_kprintf("[Bridge] UART1→UART2 forward started\n");
 
-    rt_kprintf("[Bridge] DTU recv started @ 115200 (hex dump mode)\n");
-
-    while (1)
-    {
-        int len = rt_device_read(g_dtu_uart, 0, buf, sizeof(buf));
+    while (1) {
+        int len = rt_device_read(g_uart1, 0, buf, sizeof(buf));
         if (len > 0) {
-            rt_kprintf("[DTU-HEX] len=%d: ", len);
-            for (int i = 0; i < len; i++) {
-                rt_kprintf("%02X ", buf[i]);
-            }
-            rt_kprintf("| ");
-            for (int i = 0; i < len; i++) {
-                unsigned char c = buf[i];
-                if (c >= 32 && c < 127) rt_kprintf("%c", c);
-                else rt_kprintf(".");
-            }
-            rt_kprintf("\n");
+            rt_device_write(g_uart2, 0, buf, len);
         }
-        rt_thread_mdelay(50);
+        rt_thread_mdelay(5);
     }
 }
 
 /* ================================================================
- * MSH: dtu_send
+ * UART2 → UART1 转发线程
  * ================================================================ */
 
-static void dtu_send(int argc, char **argv)
+static void uart2_to_uart1_entry(void *parameter)
 {
-    if (g_dtu_uart == RT_NULL) {
-        rt_kprintf("[DTU] ERROR: UART2 not ready!\n");
-        return;
-    }
-    if (argc < 2) {
-        rt_kprintf("Usage: dtu_send <data>\n");
-        return;
-    }
-
-    char buf[BUF_SIZE];
-    int pos = 0;
-    for (int i = 1; i < argc; i++) {
-        int alen = rt_strlen(argv[i]);
-        if (pos + alen + 2 > (int)sizeof(buf)) break;
-        if (i > 1) buf[pos++] = ' ';
-        rt_memcpy(buf + pos, argv[i], alen);
-        pos += alen;
-    }
-    buf[pos++] = '\r';
-    buf[pos++] = '\n';
-    buf[pos] = '\0';
-
-    rt_kprintf("[SEND-HEX] ");
-    for (int i = 0; i < pos; i++) rt_kprintf("%02X ", (unsigned char)buf[i]);
-    rt_kprintf("| %s", buf);
-
-    int ret = rt_device_write(g_dtu_uart, 0, buf, pos);
-    if (ret < 0) rt_kprintf("[DTU] ERROR: send failed\n");
-}
-MSH_CMD_EXPORT(dtu_send, send data to DTU via UART2);
-
-/* ================================================================
- * MSH: dtu_raw —— 发送原始十六进制字节
- * ================================================================ */
-
-static void dtu_raw(int argc, char **argv)
-{
-    if (g_dtu_uart == RT_NULL) {
-        rt_kprintf("[DTU] ERROR: UART2 not ready!\n");
-        return;
-    }
-    if (argc < 2) {
-        rt_kprintf("Usage: dtu_raw <hex bytes>\n");
-        rt_kprintf("Example: dtu_raw 41 54 0D 0A   (sends AT\\r\\n)\n");
-        return;
-    }
-
     unsigned char buf[BUF_SIZE];
-    int len = 0;
-    for (int i = 1; i < argc && len < (int)sizeof(buf); i++) {
-        unsigned int byte;
-        if (sscanf(argv[i], "%x", &byte) == 1) {
-            buf[len++] = (unsigned char)byte;
+    rt_kprintf("[Bridge] UART2→UART1 forward started\n");
+
+    while (1) {
+        int len = rt_device_read(g_uart2, 0, buf, sizeof(buf));
+        if (len > 0) {
+            rt_device_write(g_uart1, 0, buf, len);
         }
+        rt_thread_mdelay(5);
     }
-
-    rt_kprintf("[SEND-RAW] %d bytes: ", len);
-    for (int i = 0; i < len; i++) rt_kprintf("%02X ", buf[i]);
-    rt_kprintf("\n");
-
-    rt_device_write(g_dtu_uart, 0, buf, len);
 }
-MSH_CMD_EXPORT(dtu_raw, send raw hex bytes to DTU);
 
 /* ================================================================
  * 初始化
@@ -127,42 +60,77 @@ MSH_CMD_EXPORT(dtu_raw, send raw hex bytes to DTU);
 
 static int bridge_init(void)
 {
-    rt_thread_t thread;
+    rt_thread_t t1, t2;
+    struct serial_configure cfg;
 
-    g_dtu_uart = rt_device_find(DTU_UART_NAME);
-    if (g_dtu_uart == RT_NULL) {
-        rt_kprintf("[Bridge] ERROR: '%s' not found!\n", DTU_UART_NAME);
+    /* 打开 UART1 (COM9) - 读写 */
+    g_uart1 = rt_device_find("uart1");
+    if (g_uart1 == RT_NULL) {
+        rt_kprintf("[Bridge] ERROR: uart1 not found!\n");
+        return -RT_ERROR;
+    }
+    if (rt_device_open(g_uart1, RT_DEVICE_OFLAG_RDWR) != RT_EOK) {
+        rt_kprintf("[Bridge] ERROR: failed to open uart1!\n");
         return -RT_ERROR;
     }
 
-    if (rt_device_open(g_dtu_uart, RT_DEVICE_OFLAG_RDWR) != RT_EOK) {
-        rt_kprintf("[Bridge] ERROR: failed to open '%s'!\n", DTU_UART_NAME);
-        g_dtu_uart = RT_NULL;
+    /* 打开 UART2 (DTU) - 读写 */
+    g_uart2 = rt_device_find("uart2");
+    if (g_uart2 == RT_NULL) {
+        rt_kprintf("[Bridge] ERROR: uart2 not found!\n");
+        return -RT_ERROR;
+    }
+    if (rt_device_open(g_uart2, RT_DEVICE_OFLAG_RDWR) != RT_EOK) {
+        rt_kprintf("[Bridge] ERROR: failed to open uart2!\n");
         return -RT_ERROR;
     }
 
-    struct serial_configure cfg = RT_SERIAL_CONFIG_DEFAULT;
+    /* 配置 UART1: 115200 8N1 */
+    cfg = RT_SERIAL_CONFIG_DEFAULT;
     cfg.baud_rate = 115200;
     cfg.data_bits = DATA_BITS_8;
     cfg.stop_bits = STOP_BITS_1;
     cfg.parity    = PARITY_NONE;
-    rt_device_control(g_dtu_uart, RT_DEVICE_CTRL_CONFIG, &cfg);
+    rt_device_control(g_uart1, RT_DEVICE_CTRL_CONFIG, &cfg);
 
-    rt_kprintf("[Bridge] UART2 opened @ 115200\n");
+    /* 配置 UART2: 115200 8N1 (可改) */
+    cfg = RT_SERIAL_CONFIG_DEFAULT;
+    cfg.baud_rate = 115200;
+    cfg.data_bits = DATA_BITS_8;
+    cfg.stop_bits = STOP_BITS_1;
+    cfg.parity    = PARITY_NONE;
+    rt_device_control(g_uart2, RT_DEVICE_CTRL_CONFIG, &cfg);
 
-    thread = rt_thread_create("dtu_recv", dtu_recv_thread_entry, RT_NULL, 2048, 12, 10);
-    if (thread) rt_thread_startup(thread);
+    rt_kprintf("[Bridge] UART1 @ 115200, UART2 @ 115200\n");
+
+    /* 启动转发线程 */
+    t1 = rt_thread_create("u1_u2", uart1_to_uart2_entry, RT_NULL, 1024, 12, 10);
+    t2 = rt_thread_create("u2_u1", uart2_to_uart1_entry, RT_NULL, 1024, 12, 10);
+    if (t1) rt_thread_startup(t1);
+    if (t2) rt_thread_startup(t2);
 
     return RT_EOK;
 }
+
+/* ================================================================
+ * Main
+ * ================================================================ */
 
 int main(void)
 {
     rt_kprintf("\n");
     rt_kprintf("================================================\n");
-    rt_kprintf("  RT_SPARK - DTU Bridge v3 (Hex Dump)\n");
+    rt_kprintf("  RT_SPARK - Hardware Bridge v4\n");
+    rt_kprintf("  UART1(COM9) <-> UART2(DTU)\n");
+    rt_kprintf("  Pure byte forwarding, no parsing\n");
     rt_kprintf("================================================\n\n");
 
     bridge_init();
+
+    /* 主线程空转，保持系统运行 */
+    while (1) {
+        rt_thread_mdelay(1000);
+    }
+
     return 0;
 }

@@ -46,10 +46,10 @@
 /* Kernel Device Object */
 
 #define RT_USING_DEVICE
-#define RT_USING_CONSOLE
+/* 纯硬件桥接模式：关闭控制台和 FinSH，UART1 完全用于透传 */
+/* #define RT_USING_CONSOLE */
 #define RT_CONSOLEBUF_SIZE 256
-/* 透传桥接模式：控制台在 UART1(PA9/PA10)，通过 SSCOM 发送 DTU 配置命令 */
-#define RT_CONSOLE_DEVICE_NAME "uart1"
+#define RT_CONSOLE_DEVICE_NAME ""
 /* end of Kernel Device Object */
 #define RT_VER_NUM 0x40100
 /* end of RT-Thread Kernel */
@@ -64,8 +64,9 @@
 #define RT_USING_USER_MAIN
 #define RT_MAIN_THREAD_STACK_SIZE 2048
 #define RT_MAIN_THREAD_PRIORITY 10
-#define RT_USING_MSH
-#define RT_USING_FINSH
+/* 纯硬件桥接模式：关闭 MSH 和 FinSH */
+/* #define RT_USING_MSH */
+/* #define RT_USING_FINSH */
 #define FINSH_USING_MSH
 #define FINSH_THREAD_NAME "tshell"
 #define FINSH_THREAD_PRIORITY 20
