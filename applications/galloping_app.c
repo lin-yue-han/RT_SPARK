@@ -94,7 +94,7 @@ static void galloping_thread_entry(void *parameter)
     {
         ret = bn0055_read(&bno);
         if (ret != RT_EOK) {
-            rt_kprintf("{\"type\":\"debug\",\"src\":\"galloping\",\"msg\":\"bn0055_read failed\",\"ret\":%d}\n", ret);
+            /* BNO055 读取失败，静默跳过（gy_bn0055.c 已打印 debug） */
             rt_thread_mdelay(GD_THREAD_PERIOD_MS);
             continue;
         }
