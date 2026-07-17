@@ -150,12 +150,25 @@ int main(void)
     rt_kprintf("   RT_SPARK Booting... (RNDIS Arch)\n");
     rt_kprintf("========================================\n");
 
+    /* ===== 第0.5步：临时关闭控制台 RX，让 BNO055 独占 UART1 ===== */
+    rt_device_t console_dev = rt_console_get_device();
+    if (console_dev != RT_NULL) {
+        rt_device_close(console_dev);
+        rt_kprintf("[Main] Console RX closed for BNO055 init\n");
+    }
+
     /* ===== 第1步：初始化电机和加热片 ===== */
     motor_init();
     heater_relay_init();
 
-    /* ===== 第2步：初始化传感器 ===== */
+    /* ===== 第2步：初始化传感器（BNO055 独占 UART1 RX） ===== */
     sensor_init_all();
+
+    /* ===== 第2.5步：恢复控制台（只写模式，不占用 RX） ===== */
+    if (console_dev != RT_NULL) {
+        rt_device_open(console_dev, RT_DEVICE_OFLAG_WRONLY);
+        rt_kprintf("[Main] Console restored (TX-only)\n");
+    }
 
     /* ===== 第3步：启动传感器实时监控 ===== */
     sensor_monitor_start();

@@ -186,15 +186,24 @@ int bn0055_read(bn0055_data_t *data)
 
     if (data == RT_NULL || uart_dev == RT_NULL) return -RT_ERROR;
 
-    /* 最多重试 3 次，跳过噪声帧 */
+    /* 发送读取命令，请求 BNO055 输出数据 */
+    rt_device_write(uart_dev, 0, "READ\r\n", 6);
+    rt_thread_mdelay(50);  /* 等待模块响应 */
+
     while (retry-- > 0) {
         len = read_uart_line(line, sizeof(line), 300);
-        if (len <= 0) continue;
+        if (len <= 0) {
+            rt_kprintf("[BN0055] read_uart_line timeout/empty, retry left=%d\n", retry);
+            continue;
+        }
+
+        rt_kprintf("[BN0055] Raw line: len=%d, content=%.60s\n", len, line);
 
         if (parse_bn0055_frame(line, data) == RT_EOK) {
             data->error = 0;
             return RT_EOK;
         }
+        rt_kprintf("[BN0055] Parse fail: len=%d, raw=%.40s\n", len, line);
     }
 
     return -RT_ERROR;
