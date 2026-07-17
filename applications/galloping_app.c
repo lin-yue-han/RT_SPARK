@@ -94,7 +94,7 @@ static void galloping_thread_entry(void *parameter)
     {
         ret = bn0055_read(&bno);
         if (ret != RT_EOK) {
-            rt_kprintf("[Galloping] BNO055 read error!\n");
+            rt_kprintf("{\"type\":\"debug\",\"src\":\"galloping\",\"msg\":\"bn0055_read failed\",\"ret\":%d}\n", ret);
             rt_thread_mdelay(GD_THREAD_PERIOD_MS);
             continue;
         }
@@ -269,12 +269,14 @@ static void dtu_report_thread_entry(void *parameter)
 
         /* 每 5 秒发送温湿度 */
         if (now - last_env_tick >= rt_tick_from_millisecond(DTU_ENV_INTERVAL_MS)) {
-            if (dtu_is_ready() && g_sensor_ready) {
-                ret = sht3x_read(&sht3x_data);
-                if (ret == RT_EOK) {
-                    dtu_send_env(sht3x_data.temperature, sht3x_data.humidity);
-                }
+        if (dtu_is_ready() && g_sensor_ready) {
+            ret = sht3x_read(&sht3x_data);
+            if (ret == RT_EOK) {
+                dtu_send_env(sht3x_data.temperature, sht3x_data.humidity);
+            } else {
+                rt_kprintf("{\"type\":\"debug\",\"src\":\"dtu_report\",\"msg\":\"sht3x_read failed\",\"ret\":%d}\n", ret);
             }
+        }
             last_env_tick = now;
         }
 

@@ -204,6 +204,16 @@ httpServer.on("upgrade", (req, socket, head) => {
     ts: Date.now(),
   }));
 
+  // 如果 COM9 已打开，立即通知新客户端设备已接入
+  if (comPort && comPort.isOpen) {
+    ws.sendText(JSON.stringify({
+      type: "system",
+      event: "device_connected",
+      remote: "COM9-direct",
+      ts: Date.now(),
+    }));
+  }
+
   let wsBuffer = Buffer.alloc(0);
 
   socket.on("data", (chunk) => {
@@ -403,6 +413,7 @@ function openComPort() {
       try {
         parsed = JSON.parse(line);
       } catch (e) {
+        log("RAW", line.slice(0, 60));
         continue;
       }
 
