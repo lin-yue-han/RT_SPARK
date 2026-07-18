@@ -37,6 +37,11 @@ struct gd_detector {
     /* 统计缓存 */
     float  amp_sum_x, amp_sum_y, amp_sum_z;
 
+    /* 校准状态 */
+    int    calibrating;           /* 1=正在校准基线 */
+    int    calib_count;           /* 已校准样本数 */
+    float  calib_x, calib_y, calib_z;  /* 校准基线累加和 */
+
     /* 上一次分析结果 */
     gd_feature_t last_feature;
     int          feature_valid;
@@ -73,6 +78,18 @@ gd_detector_t *gd_create(const char *name, int samp_rate, int win_size)
     det->maf_win   = GD_MAF_WINDOW;
     det->overlap   = (win_size / 4 > 0) ? win_size / 4 : 1;
     det->dc_alpha  = 0.001f;    /* 指数平滑系数：慢速跟踪重力 */
+
+    /* 初始重力估计：假设传感器 Z 轴朝上（标准重力） */
+    det->dc_x = 0.0f;
+    det->dc_y = 0.0f;
+    det->dc_z = 9.81f;
+
+    /* 校准状态：前 3 秒（64 点）用于学习基线 */
+    det->calibrating = 1;
+    det->calib_count = 0;
+    det->calib_x = 0.0f;
+    det->calib_y = 0.0f;
+    det->calib_z = 0.0f;
 
     /* 分配缓冲区 */
     det->buffer = (gd_sample_t *)rt_malloc(sizeof(gd_sample_t) * det->win_size);
@@ -115,7 +132,11 @@ void gd_reset(gd_detector_t *det)
     det->buf_count = 0;
     det->maf_idx   = 0;
     det->maf_sum_x = 0; det->maf_sum_y = 0; det->maf_sum_z = 0;
-    det->dc_x = 0; det->dc_y = 0; det->dc_z = 0;
+    det->dc_x = 0.0f; det->dc_y = 0.0f; det->dc_z = 9.81f;
+    det->calibrating = 1;
+    det->calib_count = 0;
+    det->calib_x = 0.0f; det->calib_y = 0.0f; det->calib_z = 0.0f;
+    det->feature_valid = 0;
     memset(det->buffer, 0, sizeof(gd_sample_t) * det->win_size);
     memset(det->maf_x,  0, sizeof(float) * det->maf_win);
     memset(det->maf_y,  0, sizeof(float) * det->maf_win);
@@ -178,6 +199,26 @@ const gd_feature_t *gd_feed(gd_detector_t *det,
     float filt_x, filt_y, filt_z;
 
     if (det == RT_NULL) return RT_NULL;
+
+    /* ---- 校准阶段：前 64 个样本（约 3.2 秒）用于学习静止基线 ---- */
+    if (det->calibrating) {
+        det->calib_x += accel_x;
+        det->calib_y += accel_y;
+        det->calib_z += accel_z;
+        det->calib_count++;
+
+        if (det->calib_count >= det->win_size) {
+            /* 校准完成：计算基线均值作为初始重力估计 */
+            det->dc_x = det->calib_x / det->calib_count;
+            det->dc_y = det->calib_y / det->calib_count;
+            det->dc_z = det->calib_z / det->calib_count;
+            det->calibrating = 0;
+            rt_kprintf("[GD] Calibration done: dc=(%.2f,%.2f,%.2f)\n",
+                       (double)det->dc_x, (double)det->dc_y, (double)det->dc_z);
+        }
+        /* 校准期间不写入缓冲区，不分析 */
+        return RT_NULL;
+    }
 
     /* ---- 第一层：滑动均值滤波 (MAF) ---- */
     gd_maf_push(det, accel_x, accel_y, accel_z);
@@ -397,19 +438,19 @@ static void gd_extract_features(gd_detector_t *det, gd_feature_t *f)
 /**
  * @brief 基于特征向量判定电缆舞动状态
  *
- * 判定规则（经验阈值，可根据实际场景标定）：
+ * 判定规则（阈值单位为 m/s²，去直流后的动态加速度）：
  *
- *   IDLE:       振幅 < 0.05g 且 RMS < 0.05g
- *   BREEZE:     振幅 0.05~0.15g，f > 1.5Hz（高频小振幅 = 微风振动）
- *   MODERATE:   振幅 0.15~0.5g，f 0.3~1.5Hz
- *   SEVERE:     振幅 > 0.5g，f < 0.5Hz（低频大振幅 = 舞动）
- *   ICE:        振幅 > 0.3g + f < 0.3Hz + 扭转 > 15°（覆冰特征）
+ *   IDLE:       振幅 < 0.20 且 RMS < 0.15
+ *   BREEZE:     振幅 0.20~0.60，频率 > 1.0 Hz
+ *   MODERATE:   振幅 0.60~2.50，频率 0.3~3 Hz
+ *   SEVERE:     振幅 > 2.50，频率 < 0.5 Hz
+ *   ICE:        振幅 > 1.50 + 频率 < 0.3 Hz + 扭转 > 10°
  */
 static galloping_state_t gd_classify(const gd_feature_t *f)
 {
-    float amp_g  = f->amp_dominant / GD_GRAVITY;    /* 归一化为 g */
-    float rms_g  = f->rms_accel    / GD_GRAVITY;
-    float freq   = f->dominant_freq;
+    float amp   = f->amp_dominant;    /* 直接使用 m/s² */
+    float rms   = f->rms_accel;
+    float freq  = f->dominant_freq;
     float torsion = f->torsion_deg;
 
     /* 传感器异常检查 */
@@ -417,35 +458,36 @@ static galloping_state_t gd_classify(const gd_feature_t *f)
         return GD_STATE_UNKNOWN;
     }
 
-    /* 静止 */
-    if (amp_g < 0.03f && rms_g < 0.03f) {
+    /* 静止：低振幅 + 低 RMS */
+    if (amp < GD_IDLE_AMP_MAX && rms < GD_IDLE_RMS_MAX) {
         return GD_STATE_IDLE;
     }
 
-    /* 覆冰舞动：低频 + 大振幅 + 明显扭转 */
-    if (freq < 0.3f && amp_g > 0.2f && torsion > 15.0f) {
+    /* 覆冰舞动：大振幅 + 极低频 + 明显扭转 */
+    if (amp >= GD_ICE_AMP_MIN && freq < GD_ICE_FREQ_MAX && torsion > GD_ICE_TORSION_MIN) {
         return GD_STATE_ICE;
     }
 
-    /* 剧烈舞动 */
-    if (freq < 0.5f && amp_g > 0.4f) {
+    /* 剧烈舞动：大振幅 + 低频 */
+    if (amp >= GD_SEVERE_AMP_MIN && freq < GD_SEVERE_FREQ_MAX) {
         return GD_STATE_SEVERE;
     }
 
-    /* 中等舞动 */
-    if (freq < 1.5f && amp_g > 0.15f) {
+    /* 中等舞动：中等振幅 + 中低频 */
+    if (amp >= GD_MODERATE_AMP_MIN && amp < GD_MODERATE_AMP_MAX && freq >= GD_MODERATE_FREQ_MIN) {
         return GD_STATE_MODERATE;
     }
 
-    /* 微风振动：高频小振幅 */
-    if (freq > 1.5f && amp_g > 0.05f) {
+    /* 微风振动：小振幅 + 高频 */
+    if (amp >= GD_BREEZE_AMP_MIN && amp < GD_BREEZE_AMP_MAX && freq >= GD_BREEZE_FREQ_MIN) {
         return GD_STATE_BREEZE;
     }
 
-    /* 微弱振动也归入微风 */
-    if (amp_g > 0.03f && rms_g > 0.03f) {
-        return GD_STATE_BREEZE;
+    /* 微弱振动归入 IDLE（避免微小噪声误报） */
+    if (amp < GD_BREEZE_AMP_MIN && rms < GD_IDLE_RMS_MAX) {
+        return GD_STATE_IDLE;
     }
 
-    return GD_STATE_IDLE;
+    /* 无法明确归类：默认为微风（存在振动但特征不明确） */
+    return GD_STATE_BREEZE;
 }

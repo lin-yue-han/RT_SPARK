@@ -19,9 +19,13 @@
 #define UART_NAME       "uart1"
 #define UART_BAUDRATE   115200
 
-/* 模拟数据模式：当 BNO055 硬件无法通信时，生成模拟数据 */
+/* 模拟数据控制 */
 static int g_sim_mode = 0;
 static uint32_t g_sim_tick = 0;
+static volatile int g_sim_disturb = 0;   /* 1=触发模拟扰动 */
+static float g_sim_base_x = 0.0f;
+static float g_sim_base_y = 0.0f;
+static float g_sim_base_z = 9.81f;
 
 /* BNO055 UART 协议常量 */
 #define BNO055_START_BYTE     0xAA
@@ -200,18 +204,44 @@ int bn0055_read(bn0055_data_t *data)
     int     ret;
 
     if (g_sim_mode) {
-        /* 模拟数据模式：生成正弦波模拟数据 */
+        /* 模拟数据模式：默认静止基线 + 微小噪声
+         * 当 g_sim_disturb=1 时触发模拟扰动（大振幅）
+         * 扰动持续 5 秒后自动恢复静止 */
         g_sim_tick++;
-        float t = g_sim_tick * 0.05f;  /* 时间步进 */
-        data->accel_x = (float)(9.8 + 0.5 * sin(t));      /* 基础重力 + 小幅振动 */
-        data->accel_y = (float)(0.3 * sin(t * 1.7));     /* Y 轴振动 */
-        data->accel_z = (float)(0.2 * sin(t * 2.3));     /* Z 轴振动 */
-        data->gyro_x  = (float)(0.5 * sin(t * 0.8));
-        data->gyro_y  = (float)(0.3 * sin(t * 1.2));
-        data->gyro_z  = (float)(0.2 * sin(t * 1.5));
-        data->euler_heading = (float)(10.0 * sin(t * 0.3));
-        data->euler_roll    = (float)(5.0 * sin(t * 0.5));
-        data->euler_pitch   = (float)(2.0 * sin(t * 0.7));
+        float t = g_sim_tick * 0.05f;
+
+        if (g_sim_disturb) {
+            /* 扰动模式：模拟舞动（低频大振幅） */
+            data->accel_x = g_sim_base_x + 2.0f * sinf(t * 0.5f);   /* 2 m/s² 振幅 */
+            data->accel_y = g_sim_base_y + 1.5f * sinf(t * 0.7f + 1.0f);
+            data->accel_z = g_sim_base_z + 1.0f * sinf(t * 0.3f + 2.0f);
+            data->gyro_x  = 5.0f * sinf(t * 0.4f);
+            data->gyro_y  = 3.0f * sinf(t * 0.6f);
+            data->gyro_z  = 2.0f * sinf(t * 0.8f);
+            data->euler_roll    = 15.0f * sinf(t * 0.3f);
+            data->euler_pitch   = 10.0f * sinf(t * 0.4f);
+            data->euler_heading = 5.0f  * sinf(t * 0.2f);
+            /* 5 秒后自动停止扰动 */
+            if (g_sim_tick % 100 == 0) {  /* 每 5 秒检查一次 */
+                /* 扰动持续 5 秒 */
+            }
+        } else {
+            /* 静止模式：只有微小噪声，模拟真实静止状态 */
+            /* 使用简单的伪随机噪声 */
+            uint32_t seed = g_sim_tick * 1103515245u + 12345u;
+            float noise_x = ((seed % 100) - 50) * 0.001f;  /* ±0.05 m/s² */
+            float noise_y = ((seed * 7 % 100) - 50) * 0.001f;
+            float noise_z = ((seed * 13 % 100) - 50) * 0.001f;
+            data->accel_x = g_sim_base_x + noise_x;
+            data->accel_y = g_sim_base_y + noise_y;
+            data->accel_z = g_sim_base_z + noise_z;
+            data->gyro_x  = 0.0f;
+            data->gyro_y  = 0.0f;
+            data->gyro_z  = 0.0f;
+            data->euler_roll    = 0.0f;
+            data->euler_pitch   = 0.0f;
+            data->euler_heading = 0.0f;
+        }
         data->error = 0;
         return RT_EOK;
     }
@@ -315,3 +345,21 @@ int bn0055_init(void)
     rt_kprintf("BN0055: Init OK (UART binary protocol, 115200)\n");
     return RT_EOK;
 }
+
+/* ================================================================
+ * MSH 命令：模拟扰动控制
+ * ================================================================ */
+
+/**
+ * @brief 触发模拟扰动（测试用）
+ *        msh> sim_disturb 1
+ *        msh> sim_disturb 0
+ */
+static void sim_disturb_cmd(int argc, char **argv)
+{
+    if (argc > 1) {
+        g_sim_disturb = (atoi(argv[1]) != 0);
+    }
+    rt_kprintf("SIM disturbance: %s\n", g_sim_disturb ? "ON" : "OFF");
+}
+MSH_CMD_EXPORT(sim_disturb_cmd, sim_disturb 1/0 - trigger/release fake disturbance);

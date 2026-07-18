@@ -33,6 +33,28 @@
 #define GD_GRAVITY_THRESHOLD    0.8f        /* 重力分量阈值（g） */
 #define GD_GRAVITY               9.81f      /* 标准重力加速度 */
 
+/* 状态判定阈值（基于去直流后的动态加速度，单位 m/s²）
+ * 阈值基于电缆舞动实际物理特征设定：
+ *   - 静止噪声：±0.1 m/s² 以下
+ *   - 微风振动：0.2~0.5 m/s²（高频小振幅）
+ *   - 中等舞动：0.5~2.0 m/s²（典型电缆舞动）
+ *   - 剧烈舞动：>2.0 m/s²（大振幅低频）
+ *   - 覆冰舞动：大振幅 + 极低频 + 扭转
+ */
+#define GD_IDLE_AMP_MAX         0.20f       /* 静止：峰-峰值 < 0.20 m/s² */
+#define GD_IDLE_RMS_MAX         0.15f       /* 静止：RMS < 0.15 m/s² */
+#define GD_BREEZE_AMP_MIN       0.20f       /* 微风：振幅 ≥ 0.20 */
+#define GD_BREEZE_AMP_MAX       0.60f       /* 微风：振幅 < 0.60 */
+#define GD_BREEZE_FREQ_MIN      1.0f        /* 微风：频率 > 1.0 Hz */
+#define GD_MODERATE_AMP_MIN     0.60f       /* 中等：振幅 ≥ 0.60 */
+#define GD_MODERATE_AMP_MAX     2.50f       /* 中等：振幅 < 2.50 */
+#define GD_MODERATE_FREQ_MIN    0.3f        /* 中等：频率 > 0.3 Hz */
+#define GD_SEVERE_AMP_MIN       2.50f       /* 剧烈：振幅 ≥ 2.50 */
+#define GD_SEVERE_FREQ_MAX      0.5f        /* 剧烈：频率 < 0.5 Hz */
+#define GD_ICE_AMP_MIN          1.50f       /* 覆冰：振幅 ≥ 1.50 */
+#define GD_ICE_FREQ_MAX         0.3f        /* 覆冰：频率 < 0.3 Hz */
+#define GD_ICE_TORSION_MIN      10.0f       /* 覆冰：扭转 > 10° */
+
 /* ================================================================
  * 2. 舞动状态枚举
  * ================================================================ */
