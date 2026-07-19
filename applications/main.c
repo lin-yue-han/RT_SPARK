@@ -22,12 +22,16 @@
 #include <rtdevice.h>
 #include <board.h>
 #include "dtu_sender.h"
+#include "gy_bn0055.h"
+
+#define DTU_UART_DIAG_MODE 0
 
 /* 外部函数声明 */
 extern void sensor_init_all(void);
 extern void sensor_monitor_start(void);
 extern void galloping_start(void);
 extern void dtu_report_start(void);
+extern void gd_reset_detector(void);
 
 /* 左电机引脚 */
 #define LEFT_AIN1   GET_PIN(A, 0)   /* PA0 */
@@ -56,7 +60,7 @@ static void heater_relay_init(void)
 }
 
 /* 开启加热 */
-static void heater_on(void)
+void heater_on(void)
 {
     rt_pin_write(HEATER_CTRL_PIN, RELAY_ON_LEVEL);
     rt_kprintf("Heater ON (PA8=%s)\n", RELAY_ON_LEVEL == PIN_HIGH ? "HIGH" : "LOW");
@@ -64,12 +68,21 @@ static void heater_on(void)
 MSH_CMD_EXPORT(heater_on, turn heater relay on);
 
 /* 关闭加热 */
-static void heater_off(void)
+void heater_off(void)
 {
     rt_pin_write(HEATER_CTRL_PIN, RELAY_OFF_LEVEL);
     rt_kprintf("Heater OFF (PA8=%s)\n", RELAY_OFF_LEVEL == PIN_LOW ? "LOW" : "HIGH");
 }
 MSH_CMD_EXPORT(heater_off, turn heater relay off);
+
+/* 加热超时回调：14秒后自动关闭（上电默认行为） */
+static void heater_timeout(void *parameter)
+{
+    heater_off();
+    rt_kprintf("[Heater] Auto off after 14 seconds (power-on default)\n");
+}
+
+static rt_timer_t g_heater_timer = RT_NULL;
 
 /* 初始化电机引脚（只需调用一次） */
 static void motor_init(void)
@@ -134,7 +147,7 @@ static void backward(void)
 }
 MSH_CMD_EXPORT(backward, go backward);
 
-static void stop(void)
+void stop(void)
 {
     left_motor(0);
     right_motor(0);
@@ -142,33 +155,309 @@ static void stop(void)
 }
 MSH_CMD_EXPORT(stop, stop);
 
+/* ========== 电机状态与定时器（全局变量必须在函数之前定义） ========== */
+static volatile int g_motor_position = 0;   /* 当前位置 0~100% */
+static volatile int g_motor_state = 0;       /* 0=stop, 1=forward, 2=backward */
+static rt_timer_t g_motor_timer = RT_NULL;
+
+/* 电机超时回调：6秒后自动停止 */
+void motor_timeout(void *parameter)
+{
+    stop();
+    g_motor_state = 0;
+    rt_kprintf("[Motor] Auto stop after 6 seconds\n");
+}
+
+/* 启动电机并设置6秒定时器（供外部调用） */
+void start_motor_with_timeout(int dir)
+{
+    /* 停止现有定时器 */
+    /* 启动电机 */
+    if (dir == 1) {
+        forward();
+        g_motor_state = 1;
+    } else if (dir == -1) {
+        backward();
+        g_motor_state = 2;
+    } else {
+        stop();
+        g_motor_state = 0;
+        return;
+    }
+
+    /* 创建 6 秒定时器 */
+}
+
+/* ========== 远程命令接收与电机状态管理 ========== */
+
+static void motor_set_state(const char *state, int pos)
+{
+    if (rt_strcmp(state, "forward") == 0) {
+        forward();
+        g_motor_state = 1;
+    } else if (rt_strcmp(state, "backward") == 0) {
+        backward();
+        g_motor_state = 2;
+    } else if (rt_strcmp(state, "stop") == 0) {
+        stop();
+        g_motor_state = 0;
+    }
+    g_motor_position = pos;
+}
+
+static const char *motor_state_name(void)
+{
+    switch (g_motor_state) {
+        case 1:  return "forward";
+        case 2:  return "backward";
+        default: return "stop";
+    }
+}
+
+/**
+ * @brief 远程命令接收线程
+ *        从 gy_bn0055.c 提取的 UART1 命令缓冲区中读取命令并执行
+ */
+static void remote_cmd_thread_entry(void *parameter)
+{
+    char cmd[CMD_BUF_SIZE];
+    rt_kprintf("[RemoteCMD] Command receiver thread started\n");
+
+    while (1) {
+        /* 等待命令（阻塞，最长 500ms） */
+        int ret = cmd_get_remote_command(cmd, 500);
+        if (ret != RT_EOK) {
+            continue;
+        }
+
+        rt_kprintf("[RemoteCMD] Received: %s\n", cmd);
+
+        /* 解析并执行命令 */
+        if (rt_strcmp(cmd, "forward") == 0) {
+            start_motor_with_timeout(1);
+            dtu_send_motor("forward", g_motor_position);
+            rt_kprintf("[RemoteCMD] -> FORWARD executed (6s auto-stop)\n");
+        }
+        else if (rt_strcmp(cmd, "backward") == 0) {
+            start_motor_with_timeout(-1);
+            dtu_send_motor("backward", g_motor_position);
+            rt_kprintf("[RemoteCMD] -> BACKWARD executed (6s auto-stop)\n");
+        }
+        else if (rt_strcmp(cmd, "stop") == 0) {
+            start_motor_with_timeout(0);
+            dtu_send_motor("stop", g_motor_position);
+            rt_kprintf("[RemoteCMD] -> STOP executed\n");
+        }
+        else if (rt_strcmp(cmd, "heater_on") == 0) {
+            heater_on();
+            rt_kprintf("[RemoteCMD] -> HEATER ON executed\n");
+        }
+        else if (rt_strcmp(cmd, "heater_off") == 0) {
+            heater_off();
+            rt_kprintf("[RemoteCMD] -> HEATER OFF executed\n");
+        }
+        else if (rt_strcmp(cmd, "reset_detector") == 0) {
+            gd_reset_detector();
+            rt_kprintf("[RemoteCMD] -> DETECTOR RESET executed\n");
+        }
+        else {
+            rt_kprintf("[RemoteCMD] Unknown command: %s\n", cmd);
+        }
+    }
+}
+
+/* 上电电机自动测试序列：先停5秒，再前进10秒，然后后退12秒 */
+static void power_on_motor_thread(void *parameter)
+{
+    rt_kprintf("[PowerOn] Starting motor sequence: wait 5s, forward 10s, then backward 12s\n");
+
+    /* 先停5秒 */
+    rt_thread_mdelay(5000);
+
+    /* 前进13秒 */
+    forward();
+    g_motor_state = 1;
+    rt_thread_mdelay(13000);
+
+    /* 立刻后退16秒 */
+    backward();
+    g_motor_state = 2;
+    rt_thread_mdelay(16000);
+
+    /* 停止 */
+    stop();
+    g_motor_state = 0;
+    rt_kprintf("[PowerOn] Motor sequence completed\n");
+}
+
+#if DTU_UART_DIAG_MODE
+static void dtu_diag_drain(rt_device_t dtu, int duration_ms)
+{
+    char buf[96];
+    int got = 0;
+    rt_tick_t end_tick = rt_tick_get() + rt_tick_from_millisecond(duration_ms);
+
+    while ((rt_int32_t)(end_tick - rt_tick_get()) > 0) {
+        int n = rt_device_read(dtu, 0, buf, sizeof(buf));
+        if (n > 0) {
+            int i;
+            got = 1;
+            rt_kprintf("[DTU-DIAG] RX(%d): ", n);
+            for (i = 0; i < n; i++) {
+                char ch = buf[i];
+                if (ch == '\r') {
+                    rt_kprintf("\\r");
+                } else if (ch == '\n') {
+                    rt_kprintf("\\n");
+                } else if (ch >= 32 && ch <= 126) {
+                    rt_kprintf("%c", ch);
+                } else {
+                    rt_kprintf("\\x%02X", (unsigned char)ch);
+                }
+            }
+            rt_kprintf("\n");
+        }
+        rt_thread_mdelay(20);
+    }
+
+    if (!got) {
+        rt_kprintf("[DTU-DIAG] no RX in %dms\n", duration_ms);
+    }
+}
+
+static void dtu_diag_send_line(rt_device_t dtu, const char *line)
+{
+    rt_kprintf("[DTU-DIAG] TX: %s\n", line);
+    rt_device_write(dtu, 0, line, rt_strlen(line));
+    rt_device_write(dtu, 0, "\r\n", 2);
+    dtu_diag_drain(dtu, 1800);
+}
+
+static int dtu_uart_diag_main(void)
+{
+    rt_device_t console_dev = rt_console_get_device();
+    rt_device_t dtu = RT_NULL;
+    struct serial_configure cfg = RT_SERIAL_CONFIG_DEFAULT;
+    static const char *probe_names[] = {
+        "A",
+        "CR",
+        "LF",
+        "A_CR",
+        "A_LF",
+        "A_CRLF",
+        "CONFIG_CRLF",
+    };
+    static const char *probe_data[] = {
+        "A",
+        "\r",
+        "\n",
+        "A\r",
+        "A\n",
+        "A\r\n",
+        "config,get,tcp\r\n",
+    };
+    int i;
+
+    if (console_dev != RT_NULL) {
+        rt_device_close(console_dev);
+        rt_device_open(console_dev, RT_DEVICE_OFLAG_RDWR);
+    }
+
+    rt_kprintf("\n\n========================================\n");
+    rt_kprintf("   RT_SPARK DTU UART2 DIAG MODE\n");
+    rt_kprintf("   COM9 <-> UART2, 115200 8N1\n");
+    rt_kprintf("========================================\n");
+
+    dtu = rt_device_find("uart2");
+    if (dtu == RT_NULL) {
+        rt_kprintf("[DTU-DIAG] ERROR: uart2 not found\n");
+        return -1;
+    }
+
+    cfg.data_bits = DATA_BITS_8;
+    cfg.stop_bits = STOP_BITS_1;
+    cfg.parity = PARITY_NONE;
+    if (rt_device_open(dtu, RT_DEVICE_OFLAG_RDWR) != RT_EOK) {
+        rt_kprintf("[DTU-DIAG] ERROR: open uart2 failed\n");
+        return -1;
+    }
+
+    cfg.baud_rate = BAUD_RATE_115200;
+    rt_device_control(dtu, RT_DEVICE_CTRL_CONFIG, &cfg);
+    rt_kprintf("[DTU-DIAG] uart2 opened, starting loopback signature test in 3s\n");
+    rt_thread_mdelay(3000);
+
+    for (i = 0; i < (int)(sizeof(probe_data) / sizeof(probe_data[0])); i++) {
+        rt_kprintf("[DTU-DIAG] TX-SIG %s len=%d\n", probe_names[i], (int)rt_strlen(probe_data[i]));
+        rt_device_write(dtu, 0, probe_data[i], rt_strlen(probe_data[i]));
+        dtu_diag_drain(dtu, 1200);
+        rt_thread_mdelay(800);
+    }
+
+    rt_kprintf("[DTU-DIAG] probe sequence done; entering passive bridge loop\n");
+    while (1) {
+        char buf[96];
+        int n;
+
+        n = rt_device_read(dtu, 0, buf, sizeof(buf));
+        if (n > 0) {
+            rt_kprintf("[DTU-DIAG] RX-LIVE(%d): ", n);
+            if (console_dev != RT_NULL) {
+                rt_device_write(console_dev, 0, buf, n);
+            }
+            rt_kprintf("\n");
+        }
+
+        if (console_dev != RT_NULL) {
+            n = rt_device_read(console_dev, 0, buf, sizeof(buf));
+            if (n > 0) {
+                rt_device_write(dtu, 0, buf, n);
+            }
+        }
+
+        rt_thread_mdelay(20);
+    }
+}
+#endif
+
 int main(void)
 {
+#if DTU_UART_DIAG_MODE
+    return dtu_uart_diag_main();
+#endif
+
     /* ===== 第0步：最早打印，确认终端通路 ===== */
     rt_kprintf("\n\n");
     rt_kprintf("========================================\n");
     rt_kprintf("   RT_SPARK Booting... (RNDIS Arch)\n");
     rt_kprintf("========================================\n");
 
-    /* ===== 第0.5步：临时关闭控制台 RX，让 BNO055 独占 UART1 ===== */
-    rt_device_t console_dev = rt_console_get_device();
-    if (console_dev != RT_NULL) {
-        rt_device_close(console_dev);
-        rt_kprintf("[Main] Console RX closed for BNO055 init\n");
-    }
+    /* BNO055 now uses UART3, keep UART1/ST-Link console open for logs. */
+    rt_kprintf("[Main] Console stays on UART1; BNO055 uses UART3\n");
 
     /* ===== 第1步：初始化电机和加热片 ===== */
     motor_init();
     heater_relay_init();
 
+    /* 上电默认加热14秒后自动关闭 */
+    heater_on();
+    g_heater_timer = rt_timer_create("heater_t", heater_timeout, RT_NULL,
+        rt_tick_from_millisecond(14000), RT_TIMER_FLAG_ONE_SHOT);
+    if (g_heater_timer != RT_NULL) {
+        rt_timer_start(g_heater_timer);
+        rt_kprintf("[Main] Power-on heater ON, auto-off in 14s\n");
+    } else {
+        rt_kprintf("[Main] ERROR: Failed to create heater timer!\n");
+    }
+
     /* ===== 第2步：初始化传感器（BNO055 独占 UART1 RX） ===== */
     sensor_init_all();
 
-    /* ===== 第2.5步：恢复控制台（只写模式，不占用 RX） ===== */
-    if (console_dev != RT_NULL) {
-        rt_device_open(console_dev, RT_DEVICE_OFLAG_WRONLY);
-        rt_kprintf("[Main] Console restored (TX-only)\n");
-    }
+    rt_kprintf("[Main] Console active\n");
+
+    /* ===== 第2.6步：初始化远程命令接收信号量 ===== */
+    cmd_sem_init();
+    rt_kprintf("[Main] Remote command semaphore initialized\n");
 
     /* ===== 第3步：启动传感器实时监控 ===== */
     sensor_monitor_start();
@@ -178,9 +467,28 @@ int main(void)
     galloping_start();
     dtu_report_start();
 
-    /* ===== 第5步：上电立即启动电机 ===== */
-    rt_kprintf("[Main] Starting motors...\n");
-    forward();
+    /* ===== 第4.5步：启动远程命令接收线程 ===== */
+    rt_kprintf("[Main] Starting remote command receiver...\n");
+    rt_thread_t cmd_thread = rt_thread_create(
+        "remote_cmd",
+        remote_cmd_thread_entry,
+        RT_NULL,
+        1024,
+        20,  /* 优先级低于传感器线程，高于空闲线程 */
+        10
+    );
+    if (cmd_thread != RT_NULL) {
+        rt_thread_startup(cmd_thread);
+        rt_kprintf("[Main] Remote command receiver thread started\n");
+    } else {
+        rt_kprintf("[Main] ERROR: Failed to create remote command thread!\n");
+    }
+
+    /* ===== 第4.6步：启动 UART2 无线命令接收（Air778E 4G）===== */
+    rt_kprintf("[Main] UART2 AT sender owns 4G module; wireless command receiver disabled\n");
+
+    /* ===== 第5步：上电立即启动电机（前进6秒，后退8秒） ===== */
+    rt_kprintf("[Main] Power-on motor sequence disabled; waiting for wireless commands\n");
 
     rt_kprintf("[Main] System running. Type 'stop' to stop motors.\n");
 

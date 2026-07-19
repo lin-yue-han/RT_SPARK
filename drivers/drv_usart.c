@@ -16,6 +16,8 @@
 
 #include "board.h"
 
+/* RT_SPARK: board.h controls whether PB10/PB11 are UART3 or BNO055 I2C2. */
+
 #ifdef RT_USING_SERIAL
 
 #include "string.h"

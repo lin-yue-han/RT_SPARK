@@ -27,3 +27,12 @@ __pycache__/
 
 # Windows
 Thumbs.db
+
+# Node.js 依赖（通过 npm install 恢复，不要提交到仓库）
+node_modules/
+
+# 日志文件
+*.log
+
+# 工具产物 / 临时目录
+.codex_artifacts/

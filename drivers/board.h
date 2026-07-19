@@ -80,9 +80,12 @@ extern "C"
 
 /* UART3：BNO055 传感器 接 PB10(TX)/PB11(RX)
  * BNO055 从 UART1 迁移到 UART3，腾出 UART1 给 ST-Link 虚拟串口 */
-#define BSP_USING_UART3
-#define BSP_UART3_TX_PIN       "PB10"
-#define BSP_UART3_RX_PIN       "PB11"
+/* BNO055 shares PB10/PB11. The photographed module marks these pins as
+ * SCL/Rx and SDA/Tx; test it as I2C first, so do not register UART3 here.
+ */
+/* #define BSP_USING_UART3 */
+/* #define BSP_UART3_TX_PIN       "PB10" */
+/* #define BSP_UART3_RX_PIN       "PB11" */
 /*-------------------------- UART CONFIG END --------------------------*/
 
 
@@ -107,10 +110,13 @@ extern "C"
 #define BSP_I2C1_SDA_PIN    GET_PIN(D, 8)
 #endif
 
-/*#define BSP_USING_I2C2*/
+/* Software I2C2: BNO055 module on BNO_TX3/BNO_RX3.
+ * Module silk: SCL/Rx, SDA/Tx. In default I2C mode these pins are SCL/SDA.
+ */
+#define BSP_USING_I2C2
 #ifdef BSP_USING_I2C2
-#define BSP_I2C2_SCL_PIN    GET_PIN(port, pin)
-#define BSP_I2C2_SDA_PIN    GET_PIN(port, pin)
+#define BSP_I2C2_SCL_PIN    GET_PIN(B, 10)
+#define BSP_I2C2_SDA_PIN    GET_PIN(B, 11)
 #endif
 
 /*-------------------------- I2C CONFIG END --------------------------*/

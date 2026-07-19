@@ -1,19 +1,18 @@
 /*
- * dtu_sender.h - 4G DTU 数据发送模块接口（RNDIS 双串口架构）
+ * dtu_sender.h - 4G DTU 数据发送模块接口（无线透传模式）
  *
  * 修改说明：
- *   原方案通过 UART2 向 4G 模块发送数据，但模块硬件 UART 不通。
- *   新方案：通过控制台（ST-Link VCP / COM9）输出 JSON 数据，
- *   由电脑上的 bridge.js 读取 COM9 并通过网络转发到 frp 服务器。
+ *   本模块通过 UART2 向 Air778E 4G 模块发送 JSON 数据，
+ *   由 Air778E 通过 TCP 透传转发到 frp 服务器，最终到达网页端。
+ *   若 UART2 不可用，则回退到控制台 UART1（仅用于调试）。
  *
- * 数据流：
- *   STM32 (BNO055/SHT3X) → 控制台 UART1 → ST-Link VCP (COM9) →
- *   bridge.js (COM9 读取) → TCP 客户端 → frp-oil.com:32762 → 网页
+ * 数据流（无线）：
+ *   STM32 (BNO055/SHT3X) → UART2 → Air778E → 4G → frp → bridge.js → 网页
  *
  * 协议格式：每行一条 JSON，以 \n 结尾
  *
  * 使用方式：
- *   dtu_sender_init()              — 初始化控制台输出
+ *   dtu_sender_init()              — 初始化（优先 UART2，回退控制台）
  *   dtu_send_galloping(feat)       — 发送舞动检测特征
  *   dtu_send_env(temp, hum)        — 发送温湿度数据
  *   dtu_send_motor(state, pos)     — 发送电机状态
@@ -65,6 +64,12 @@ int dtu_send_motor(const char *motor_state, int position);
  * @return 发送字节数，<0 表示失败
  */
 int dtu_send_heartbeat(void);
+
+/**
+ * @brief 发送系统启动消息到控制台
+ * @return 发送字节数，<0 表示失败
+ */
+int dtu_send_raw_accel(float ax, float ay, float az);
 
 /**
  * @brief 发送系统启动消息到控制台

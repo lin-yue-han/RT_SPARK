@@ -174,4 +174,11 @@ const char *gd_state_name(galloping_state_t state);
  */
 void gd_feature_print(const gd_feature_t *f);
 
+/**
+ * @brief 获取最新样本的去直流后的动态加速度
+ * @param det 检测器句柄
+ * @param dx, dy, dz 输出动态加速度 (m/s²)，校准期间返回 0
+ */
+void gd_get_dynamic_accel(gd_detector_t *det, float *dx, float *dy, float *dz);
+
 #endif /* __GALLOPING_DETECT_H__ */

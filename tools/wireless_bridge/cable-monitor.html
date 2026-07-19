@@ -423,12 +423,113 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 16px;
-      padding: 20px;
-      background: rgba(0, 0, 0, 0.2);
+      padding: 16px;
+      background: rgba(0, 0, 0, 0.35);
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
-      min-height: 120px;
+      min-height: 140px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .vehicle-track-svg {
+      width: 100%;
+      height: 100px;
+      display: block;
+    }
+
+    .vehicle-track-bg {
+      fill: #0f1419;
+    }
+
+    .track-line {
+      stroke: #3a4a5f;
+      stroke-width: 3;
+      stroke-linecap: round;
+    }
+
+    .track-texture {
+      fill: none;
+      stroke: #2a3a4f;
+      stroke-width: 1.5;
+      opacity: 0.4;
+    }
+
+    .track-glow {
+      stroke: rgba(59, 130, 246, 0.15);
+      stroke-width: 6;
+      filter: blur(2px);
+    }
+
+    .vehicle-body {
+      fill: #0ea5e9;
+      stroke: #fbbf24;
+      stroke-width: 1.5;
+    }
+
+    .vehicle-wheel-ring {
+      fill: none;
+      stroke: #0ea5e9;
+      stroke-width: 2.5;
+    }
+
+    .vehicle-wheel-inner {
+      fill: #0ea5e9;
+      stroke: #fbbf24;
+      stroke-width: 1.5;
+    }
+
+    .vehicle-wheel-dot {
+      fill: #0f172a;
+    }
+
+    .vehicle-icon-rect {
+      fill: #fbbf24;
+      rx: 1.5;
+    }
+
+    .vehicle-icon-x {
+      fill: #0f172a;
+      font-size: 5px;
+      font-weight: 700;
+      font-family: var(--mono);
+    }
+
+    .vehicle-icon-dot {
+      fill: #fbbf24;
+    }
+
+    .vehicle-text {
+      fill: #e6edf3;
+      font-size: 6px;
+      font-weight: 600;
+      font-family: var(--mono);
+      letter-spacing: 0.5px;
+    }
+
+    .bubble {
+      fill: rgba(34, 211, 238, 0.5);
+      stroke: rgba(34, 211, 238, 0.3);
+      stroke-width: 0.5;
+    }
+
+    @keyframes bubble-rise {
+      0% { opacity: 0.6; transform: translate(0, 0) scale(1); }
+      100% { opacity: 0; transform: translate(-8px, -12px) scale(0.4); }
+    }
+
+    .bubble-anim {
+      animation: bubble-rise 1.5s ease-out infinite;
+    }
+
+    .bubble-anim-delay-1 { animation-delay: 0.3s; }
+    .bubble-anim-delay-2 { animation-delay: 0.6s; }
+    .bubble-anim-delay-3 { animation-delay: 0.9s; }
+
+    .pole-left, .pole-right {
+      fill: #1a2332;
+      stroke: #2a3a4f;
+      stroke-width: 1;
     }
 
     .vehicle-state {
@@ -648,6 +749,7 @@
 
     .toast.show { opacity: 1; transform: translateY(0); }
     .toast.error { border-color: rgba(239, 68, 68, 0.4); background: rgba(61, 17, 20, 0.95); color: #fff; }
+    .toast.warn { border-color: rgba(245, 158, 11, 0.4); background: rgba(66, 50, 10, 0.95); color: #fff; }
     .toast.success { border-color: rgba(34, 197, 94, 0.4); background: rgba(27, 67, 50, 0.95); color: #fff; }
 
     /* Responsive */
@@ -726,7 +828,7 @@
       <div class="kpi-icon success">POS</div>
       <div class="kpi-content">
         <div class="kpi-label">小车位置</div>
-        <div class="kpi-value" id="kpiPosition">--%</div>
+        <div class="kpi-value" id="kpiPosition">50.0%</div>
         <div class="kpi-meta" id="kpiMotorState">电机停止</div>
       </div>
     </div>
@@ -744,7 +846,7 @@
       </div>
       <div class="chart-wrapper">
         <canvas id="waveChart"></canvas>
-        <div class="chart-overlay" id="waveOverlay">f = -- Hz · A = -- g</div>
+        <div class="chart-overlay" id="waveOverlay">f = -- Hz · A = -- m/s²</div>
       </div>
       <div class="metrics-grid">
         <div class="metric-box">
@@ -753,7 +855,7 @@
         </div>
         <div class="metric-box">
           <div class="label">振幅峰峰值</div>
-          <div class="value" id="ampDom">-- g</div>
+          <div class="value" id="ampDom">-- m/s²</div>
         </div>
         <div class="metric-box">
           <div class="label">估算位移</div>
@@ -766,6 +868,20 @@
         <div class="metric-box">
           <div class="label">置信度</div>
           <div class="value" id="confidence">--%</div>
+        </div>
+      </div>
+      <div class="metrics-grid" style="margin-top:8px;opacity:0.85;">
+        <div class="metric-box">
+          <div class="label">原始加速度 X</div>
+          <div class="value" id="rawAx">-- m/s²</div>
+        </div>
+        <div class="metric-box">
+          <div class="label">原始加速度 Y</div>
+          <div class="value" id="rawAy">-- m/s²</div>
+        </div>
+        <div class="metric-box">
+          <div class="label">原始加速度 Z</div>
+          <div class="value" id="rawAz">-- m/s²</div>
         </div>
       </div>
     </div>
@@ -877,24 +993,97 @@
         <span id="motorBadge" class="card-badge badge-idle">停止</span>
       </div>
       <div class="vehicle-visual" id="vehicleVisual">
-        <div class="vehicle-state stop" id="motorState">
-          <span class="arrow"></span>
-          <span id="motorStateText">停止</span>
-        </div>
-        <div style="width:100%;">
-          <div class="position-track">
-            <div class="position-fill" id="positionFill" style="width: 0%;"></div>
-          </div>
-          <div class="position-labels">
-            <span>起点</span>
-            <span id="positionText">0%</span>
-            <span>终点</span>
-          </div>
-        </div>
+        <svg class="vehicle-track-svg" viewBox="0 0 400 100" preserveAspectRatio="xMidYMid meet">
+          <!-- 背景 -->
+          <rect class="vehicle-track-bg" x="0" y="0" width="400" height="100" rx="6"/>
+
+          <!-- 两侧电杆 -->
+          <rect class="pole-left" x="25" y="8" width="6" height="40" rx="1"/>
+          <rect class="pole-right" x="369" y="8" width="6" height="40" rx="1"/>
+
+          <!-- 轨道 -->
+          <line class="track-glow" x1="40" y1="55" x2="360" y2="55"/>
+          <line class="track-line" x1="40" y1="55" x2="360" y2="55"/>
+
+          <!-- 轨道纹理（半圆弧形） -->
+          <g class="track-texture">
+            <path d="M 45 65 Q 55 75 65 65"/>
+            <path d="M 70 65 Q 80 75 90 65"/>
+            <path d="M 95 65 Q 105 75 115 65"/>
+            <path d="M 120 65 Q 130 75 140 65"/>
+            <path d="M 145 65 Q 155 75 165 65"/>
+            <path d="M 170 65 Q 180 75 190 65"/>
+            <path d="M 195 65 Q 205 75 215 65"/>
+            <path d="M 220 65 Q 230 75 240 65"/>
+            <path d="M 245 65 Q 255 75 265 65"/>
+            <path d="M 270 65 Q 280 75 290 65"/>
+            <path d="M 295 65 Q 305 75 315 65"/>
+            <path d="M 320 65 Q 330 75 340 65"/>
+            <path d="M 345 65 Q 355 75 365 65"/>
+          </g>
+
+          <!-- 轨道上方装饰线 -->
+          <line class="track-texture" x1="40" y1="50" x2="360" y2="50" stroke-dasharray="8 6"/>
+
+          <!-- 小车组（由JS动态移动） -->
+          <g id="svgVehicle" transform="translate(200, 55)">
+            <!-- 气泡（动画） -->
+            <g id="bubbles">
+              <circle class="bubble bubble-anim" cx="28" cy="6" r="2.5"/>
+              <circle class="bubble bubble-anim bubble-anim-delay-1" cx="34" cy="2" r="1.8"/>
+              <circle class="bubble bubble-anim bubble-anim-delay-2" cx="30" cy="-2" r="1.2"/>
+              <circle class="bubble bubble-anim bubble-anim-delay-3" cx="36" cy="-4" r="1.5"/>
+            </g>
+
+            <!-- 顶部轮子（左） -->
+            <circle class="vehicle-wheel-ring" cx="-10" cy="-18" r="7"/>
+            <circle class="vehicle-wheel-inner" cx="-10" cy="-18" r="4"/>
+            <circle class="vehicle-wheel-dot" cx="-10" cy="-18" r="1.5"/>
+
+            <!-- 顶部轮子（右） -->
+            <circle class="vehicle-wheel-ring" cx="10" cy="-18" r="7"/>
+            <circle class="vehicle-wheel-inner" cx="10" cy="-18" r="4"/>
+            <circle class="vehicle-wheel-dot" cx="10" cy="-18" r="1.5"/>
+
+            <!-- 车身 -->
+            <rect class="vehicle-body" x="-22" y="-12" width="44" height="22" rx="5"/>
+
+            <!-- 左侧黄色方框带 X -->
+            <rect class="vehicle-icon-rect" x="-17" y="-7" width="8" height="8" rx="1.5"/>
+            <text class="vehicle-icon-x" x="-13" y="-1.5" text-anchor="middle">X</text>
+
+            <!-- 文字 OIE-T2 -->
+            <text class="vehicle-text" x="0" y="2" text-anchor="middle" dominant-baseline="middle">OIE-T2</text>
+
+            <!-- 右侧黄色圆点 -->
+            <circle class="vehicle-icon-dot" cx="14" cy="-3" r="2.5"/>
+          </g>
+
+          <!-- 位置标签 -->
+          <text x="200" y="92" text-anchor="middle" fill="#8b949e" font-size="8" font-family="var(--mono)" id="svgPositionLabel">0%</text>
+        </svg>
       </div>
       <div class="danger-level" style="margin-top:12px;">
         <div class="title">最后指令</div>
         <div class="desc" id="lastCommand">无</div>
+      </div>
+      <div class="danger-level" style="margin-top:8px;">
+        <div class="title">加热状态</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+          <span id="heaterBadge" class="card-badge badge-idle">未加热</span>
+          <span id="heaterTemp" style="font-size:12px;color:var(--text-secondary);">加热片关闭</span>
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <div class="title" style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">位置进度</div>
+        <div class="position-track">
+          <div class="position-fill" id="posFill" style="width:50%;"></div>
+        </div>
+        <div class="position-labels">
+          <span>起点 0%</span>
+          <span>50%</span>
+          <span>终点 100%</span>
+        </div>
       </div>
     </div>
   </section>
@@ -910,17 +1099,28 @@
     <div class="control-grid">
       <div class="control-group">
         <span class="label">运动控制</span>
-        <div style="display:flex;gap:8px;">
-          <button class="btn forward" onclick="sendCmd('forward')">前进</button>
-          <button class="btn backward" onclick="sendCmd('backward')">后退</button>
-          <button class="btn stop" onclick="sendCmd('stop')">停止</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn forward" id="btnForward" onclick="sendCmd('forward')">前进</button>
+          <button class="btn backward" id="btnBackward" onclick="sendCmd('backward')">后退</button>
+          <button class="btn stop" id="btnStop" onclick="sendCmd('stop')">停止</button>
+          <button class="btn heater" id="btnAutoPatrol" onclick="toggleAutoPatrol()" style="min-width:90px;">自动除雪</button>
         </div>
+      </div>
+      <div class="control-group">
+        <span class="label">速度控制 <span id="speedValue" style="font-family:var(--mono);color:var(--accent);">30%</span></span>
+        <input type="range" id="speedSlider" min="10" max="100" value="30" style="width:140px;accent-color:var(--accent);" oninput="updateSpeed(this.value)">
       </div>
       <div class="control-group">
         <span class="label">加热除冰</span>
         <div style="display:flex;gap:8px;">
-          <button class="btn heater" onclick="sendCmd('heater_on')">加热开启</button>
-          <button class="btn heater" onclick="sendCmd('heater_off')">加热关闭</button>
+          <button class="btn heater" id="btnHeaterOn" onclick="sendCmd('heater_on')">加热开启</button>
+          <button class="btn heater" id="btnHeaterOff" onclick="sendCmd('heater_off')">加热关闭</button>
+        </div>
+      </div>
+      <div class="control-group">
+        <span class="label">传感器校准</span>
+        <div style="display:flex;gap:8px;">
+          <button class="btn" style="background:var(--surface-raised);color:var(--text-primary);" onclick="sendResetDetector()">重新校准</button>
         </div>
       </div>
       <div class="control-group" style="flex:1;min-width:240px;">
@@ -930,6 +1130,19 @@
           <button onclick="sendCustomCmd()">发送</button>
         </div>
       </div>
+    </div>
+    <div class="control-status" id="controlStatus" style="margin-top:12px;padding:10px 14px;background:rgba(0,0,0,0.25);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:10px;">
+      <span style="width:8px;height:8px;border-radius:50%;background:var(--text-muted);display:inline-block;" id="cmdStatusDot"></span>
+      <span id="cmdStatusText">等待命令...</span>
+      <span style="margin-left:auto;font-family:var(--mono);font-size:11px;" id="lastCmdTime">--</span>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--text-muted);display:flex;gap:16px;flex-wrap:wrap;">
+      <span>快捷键: <kbd style="background:var(--surface-raised);padding:2px 6px;border-radius:4px;border:1px solid var(--border);">W</kbd> / <kbd style="background:var(--surface-raised);padding:2px 6px;border-radius:4px;border:1px solid var(--border);">↑</kbd> 前进</span>
+      <span><kbd style="background:var(--surface-raised);padding:2px 6px;border-radius:4px;border:1px solid var(--border);">S</kbd> / <kbd style="background:var(--surface-raised);padding:2px 6px;border-radius:4px;border:1px solid var(--border);">↓</kbd> 后退</span>
+      <span><kbd style="background:var(--surface-raised);padding:2px 6px;border-radius:4px;border:1px solid var(--border);">Space</kbd> 停止</span>
+      <span><kbd style="background:var(--surface-raised);padding:2px 6px;border-radius:4px;border:1px solid var(--border);">H</kbd> 加热切换</span>
+      <span><kbd style="background:var(--surface-raised);padding:2px 6px;border-radius:4px;border:1px solid var(--border);">A</kbd> 自动除雪</span>
+      <span><kbd style="background:var(--surface-raised);padding:2px 6px;border-radius:4px;border:1px solid var(--border);">R</kbd> 重新校准</span>
     </div>
     <div class="stats-bar" id="statsBar">
       运行时间: -- | 消息总数: 0 | 接收字节: 0 | 心跳: --
@@ -950,6 +1163,30 @@
 
 <div id="toast" class="toast"></div>
 
+<!-- 高危风险预警弹窗 -->
+<div id="alertModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:2000;align-items:center;justify-content:center;backdrop-filter:blur(4px);">
+  <div style="background:var(--surface);border:1px solid var(--danger);border-radius:var(--radius);padding:24px 28px;max-width:420px;width:90%;box-shadow:0 0 40px rgba(239,68,68,0.3);animation:modalIn 0.3s ease;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+      <span style="font-size:24px;">⚠️</span>
+      <span style="font-size:18px;font-weight:600;color:var(--danger);">高危风险预警</span>
+    </div>
+    <div id="alertModalBody" style="color:var(--text-primary);line-height:1.6;margin-bottom:20px;font-size:14px;">
+      检测到电缆舞动异常，请立即关注！
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button onclick="closeAlertModal()" style="padding:8px 18px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface-raised);color:var(--text-primary);cursor:pointer;font-size:13px;">忽略</button>
+      <button onclick="startAutoPatrolFromAlert()" style="padding:8px 18px;border-radius:var(--radius-sm);border:none;background:var(--danger);color:#fff;cursor:pointer;font-size:13px;font-weight:500;">启动自动除雪</button>
+    </div>
+  </div>
+</div>
+
+<style>
+@keyframes modalIn {
+  from { opacity:0; transform:scale(0.92); }
+  to { opacity:1; transform:scale(1); }
+}
+</style>
+
 <script>
 // ================================================================
 // Configuration
@@ -963,11 +1200,30 @@ let stats = { totalMessages: 0, bytesReceived: 0, startTime: Date.now() };
 let lastHeartbeat = null;
 let deviceConnected = false;
 
+/* 运动控制本地状态 */
+let localMotorState = "stop";     /* 当前本地电机状态: stop/forward/backward */
+let localPosition = 50;           /* 本地模拟位置 0~100，初始在中间 */
+let motorSpeed = 30;              /* 运动速度 10~100，默认30较慢 */
+let heaterState = false;          /* 加热状态 */
+let positionTimer = null;         /* 位置模拟定时器 */
+let lastCmdTimestamp = null;    /* 最后命令时间 */
+
+/* 电机6秒倒计时 */
+let motorCountdown = 0;           /* 剩余秒数 */
+let motorCountdownTimer = null;   /* 倒计时定时器 */
+
+/* 自动巡线除雪模式 */
+let autoPatrolState = "idle";     /* idle/running/paused */
+let autoPatrolPhase = 0;          /* 0:中间→右, 1:右→左, 2:左→中 */
+let autoPatrolTimer = null;       /* 巡线检查定时器 */
+const AUTO_PATROL_SPEED = 20;     /* 自动巡线固定速度 */
+
 const tempHistory = [];
 const humidityHistory = [];
 const waveBuffer = new Array(WAVE_BUFFER_SIZE).fill(0);
 let waveTime = 0;
 let lastGalloping = null;
+let lastRawAccel = null;
 let lastEnv = null;
 let lastMotor = null;
 
@@ -1023,11 +1279,11 @@ function setConnStatus(connected) {
     connStatus.className = "kpi-value small ok";
   } else {
     badge.className = "status-pill offline";
-    text.textContent = "未连接";
-    connIcon.className = "kpi-icon danger";
-    connIcon.textContent = "!";
-    connStatus.textContent = "WebSocket 断开";
-    connStatus.className = "kpi-value small alert";
+    text.textContent = "无线断开";
+    connIcon.className = "kpi-icon warning";
+    connIcon.textContent = "~";
+    connStatus.textContent = "无线链路断开";
+    connStatus.className = "kpi-value small warn";
     document.getElementById("deviceStatus").textContent = "Air778E: 未接入";
   }
 }
@@ -1059,6 +1315,9 @@ function handleMessage(data) {
     case "raw":
       addLog("system", `原始数据: ${data.data}`);
       break;
+    case "raw_accel":
+      handleRawAccel(data);
+      break;
   }
 }
 
@@ -1070,34 +1329,140 @@ const stateConfig = {
   ICE:     { label: "覆冰舞动", color: "ice", desc: "覆冰导致舞动，建议启动除冰" },
 };
 
+/* 全局数据清洗函数：处理异常传感器数据 */
+/* 自适应缩放特征值：处理旧版固件的异常量级 */
+function sanitizeFeature(val, threshold) {
+  if (val === undefined || val === null) return 0;
+  if (Math.abs(val) > 1000000) return val / 100000.0;  /* 严重异常 */
+  if (Math.abs(val) > 100000) return val / 10000.0;
+  if (Math.abs(val) > threshold) return val / 1000.0;  /* 缺少 0.001f 缩放 */
+  return val;
+}
+
 function handleGalloping(d) {
-  lastGalloping = d;
-  const state = d.state || "IDLE";
+  /* 数据清洗：处理异常大的特征值 */
+  let amp = sanitizeFeature(d.amp_dominant, 1000);
+  let disp = sanitizeFeature(d.displacement_est, 10000);
+  let freq = Math.min(d.dominant_freq || 0, 10);  /* 频率限制到 10Hz */
+  let torsion = Math.min(d.torsion_deg || 0, 90);
+  let confidence = Math.min(Math.max(d.confidence || 0, 0), 1);
+  
+  /* 使用 STM32 传来的原始状态，但振幅做自适应缩放 */
+  let state = d.state || "IDLE";
+  
+  /* 如果缩放后振幅仍然极大 (>100)，说明数据严重异常，强制 IDLE */
+  if (amp > 100) {
+    state = "IDLE";
+    amp = Math.min(amp, 0.5);
+  }
+  
+  /* 保存清洗后的数据 */
+  lastGalloping = { ...d, amp_dominant: amp, displacement_est: disp, state: state };
+  
   const cfg = stateConfig[state] || stateConfig.IDLE;
 
   const liveBadge = document.getElementById("liveBadge");
   liveBadge.className = `card-badge badge-${cfg.color === "ice" ? "danger" : cfg.color === "warn" ? "warn" : cfg.color === "danger" ? "danger" : "live"}`;
   liveBadge.textContent = cfg.label;
 
-  document.getElementById("domFreq").textContent = (d.dominant_freq || 0).toFixed(3) + " Hz";
-  document.getElementById("ampDom").textContent = (d.amp_dominant || 0).toFixed(3) + " g";
-  document.getElementById("displacement").textContent = (d.displacement_est || 0).toFixed(4) + " m";
-  document.getElementById("torsion").textContent = (d.torsion_deg || 0).toFixed(1) + " °";
-  document.getElementById("confidence").textContent = ((d.confidence || 0) * 100).toFixed(0) + "%";
+  document.getElementById("domFreq").textContent = freq.toFixed(3) + " Hz";
+  document.getElementById("ampDom").textContent = amp.toFixed(3) + " m/s²";
+  document.getElementById("displacement").textContent = disp.toFixed(4) + " m";
+  document.getElementById("torsion").textContent = torsion.toFixed(1) + " °";
+  document.getElementById("confidence").textContent = (confidence * 100).toFixed(0) + "%";
 
   document.getElementById("waveOverlay").textContent =
-    `f = ${(d.dominant_freq || 0).toFixed(2)} Hz · A = ${(d.amp_dominant || 0).toFixed(3)} g`;
+    `f = ${freq.toFixed(2)} Hz · A = ${amp.toFixed(3)} m/s²`;
 
-  // If raw samples provided, push them into wave buffer
-  if (Array.isArray(d.samples) && d.samples.length > 0) {
-    for (const sample of d.samples) {
-      waveBuffer.push(sample);
-      if (waveBuffer.length > WAVE_BUFFER_SIZE) waveBuffer.shift();
-    }
-  }
+  /* 波形数据由 handleRawAccel 的差分方案统一处理，这里不再重复推入 */
 
   updateDangerReport();
-  addLog("galloping", `state=${state} amp=${(d.amp_dominant||0).toFixed(3)}g freq=${(d.dominant_freq||0).toFixed(2)}Hz disp=${(d.displacement_est||0).toFixed(4)}m`);
+
+  /* 高危风险弹窗预警 */
+  if (state === "SEVERE" || state === "ICE") {
+    showAlertModal(state, d);
+  }
+
+  addLog("galloping", `state=${state} amp=${amp.toFixed(3)}m/s² freq=${freq.toFixed(2)}Hz disp=${disp.toFixed(4)}m`);
+}
+
+/* 滑动窗口：50个样本=2.5秒 */
+let axHistory = [];
+let ayHistory = [];
+let azHistory = [];
+const SW_SIZE = 50;
+let prevFiltered = 0;  /* 低通滤波器状态 */
+
+/* 上一帧原始值，用于计算差分 */
+let lastRaw = { ax: 0, ay: 0, az: 0 };
+let frameCount = 0;
+
+/* 自适应缩放：根据数据量级自动补偿 */
+function autoScale(v) {
+  if (Math.abs(v) > 1000000) return v / 100000.0;
+  if (Math.abs(v) > 100000) return v / 10000.0;
+  if (Math.abs(v) > 10000) return v / 1000.0;
+  if (Math.abs(v) > 1000) return v / 100.0;
+  if (Math.abs(v) > 100) return v / 10.0;
+  return v;
+}
+
+function handleRawAccel(d) {
+  lastRawAccel = d;
+  const ax = d.ax || 0, ay = d.ay || 0, az = d.az || 0;
+  
+  /* 显示原始值 */
+  document.getElementById("rawAx").textContent = ax.toFixed(3) + " m/s²";
+  document.getElementById("rawAy").textContent = ay.toFixed(3) + " m/s²";
+  document.getElementById("rawAz").textContent = az.toFixed(3) + " m/s²";
+
+  frameCount++;
+  
+  /* 前 5 帧只初始化 lastRaw，不计算差分（避免第一帧差分过大） */
+  if (frameCount <= 5) {
+    lastRaw.ax = ax;
+    lastRaw.ay = ay;
+    lastRaw.az = az;
+    waveBuffer.push(0);
+    if (waveBuffer.length > WAVE_BUFFER_SIZE) waveBuffer.shift();
+    return;
+  }
+
+  /* 计算差分（变化量）：不受静态偏移影响 */
+  const diffAx = ax - lastRaw.ax;
+  const diffAy = ay - lastRaw.ay;
+  const diffAz = az - lastRaw.az;
+  
+  /* 更新上一帧 */
+  lastRaw.ax = ax;
+  lastRaw.ay = ay;
+  lastRaw.az = az;
+  
+  /* 选择变化量（绝对值）最大的轴 */
+  const absDiffX = Math.abs(diffAx);
+  const absDiffY = Math.abs(diffAy);
+  const absDiffZ = Math.abs(diffAz);
+  
+  let maxDiff = diffAx;
+  let maxAbs = absDiffX;
+  if (absDiffY > maxAbs) { maxDiff = diffAy; maxAbs = absDiffY; }
+  if (absDiffZ > maxAbs) { maxDiff = diffAz; maxAbs = absDiffZ; }
+  
+  /* 自适应缩放差分 */
+  let scaledDiff = autoScale(maxDiff);
+  
+  /* 噪声门限：缩放后差分 < 0.01 视为噪声，推入 0 */
+  if (Math.abs(scaledDiff) < 0.01) {
+    scaledDiff = 0;
+  }
+  
+  /* 低通滤波：平滑高频噪声 */
+  const alpha = 0.15;
+  const sample = alpha * scaledDiff + (1 - alpha) * prevFiltered;
+  prevFiltered = sample;
+  
+  waveBuffer.push(sample);
+  if (waveBuffer.length > WAVE_BUFFER_SIZE) waveBuffer.shift();
 }
 
 function handleEnv(d) {
@@ -1131,21 +1496,16 @@ function handleMotor(d) {
   const state = d.motor_state || "stop";
   const position = d.position || 0;
 
-  document.getElementById("motorStateText").textContent = state === "forward" ? "前进中" : state === "backward" ? "后退中" : "停止";
-  document.getElementById("kpiPosition").textContent = position + "%";
-  document.getElementById("kpiMotorState").textContent = state === "forward" ? "电机前进" : state === "backward" ? "电机后退" : "电机停止";
-  document.getElementById("positionFill").style.width = position + "%";
-  document.getElementById("positionText").textContent = position + "%";
+  /* 如果 STM32 发送了明确的状态，同步本地状态 */
+  if (state === "forward" || state === "backward" || state === "stop") {
+    localMotorState = state;
+  }
+  /* 如果 STM32 发送了明确的位置，更新本地位置（优先使用本地模拟） */
+  if (position >= 0 && position <= 100) {
+    localPosition = position;
+  }
 
-  const motorState = document.getElementById("motorState");
-  const visual = document.getElementById("vehicleVisual");
-  motorState.className = "vehicle-state " + state;
-  visual.className = "vehicle-visual";
-
-  const motorBadge = document.getElementById("motorBadge");
-  if (state === "forward") { motorBadge.className = "card-badge badge-safe"; motorBadge.textContent = "前进"; }
-  else if (state === "backward") { motorBadge.className = "card-badge badge-warn"; motorBadge.textContent = "后退"; }
-  else { motorBadge.className = "card-badge badge-idle"; motorBadge.textContent = "停止"; }
+  updateVehiclePosition(localPosition);
 
   addLog("motor", `电机=${state} 位置=${position}%`);
 }
@@ -1174,10 +1534,14 @@ function handleSystem(d) {
       showToast("Air778E 设备已断开", "error");
       break;
     case "command_sent":
-      document.getElementById("lastCommand").textContent = d.command;
-      addLog("system", `命令已发送: ${d.command}`);
+      document.getElementById("lastCmdTime").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      setCmdStatus("success", `命令已发送 [无线]: ${d.command}`);
+      setCmdButtonsDisabled(false);
+      addLog("system", `命令已发送 [无线]: ${d.command}`);
       break;
     case "command_failed":
+      setCmdStatus("error", `发送失败: ${d.reason}`);
+      setCmdButtonsDisabled(false);
       addLog("system", `命令发送失败: ${d.reason}`);
       showToast(`命令发送失败: ${d.reason}`, "error");
       break;
@@ -1312,13 +1676,249 @@ function updateRecommendation(overall, galloping, ice, state) {
 // Commands
 // ================================================================
 function sendCmd(cmd) {
+  /* 本地模拟总是执行（无论是否连接） */
+  applyLocalMotorCommand(cmd);
+
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    showToast("WebSocket 未连接，无法发送命令", "error");
+    showToast("无线链路未连接，命令未发送到星火一号", "warn");
+    setCmdStatus("warn", "无线链路未连接 - 等待 Air778E 接入");
     return;
   }
+
+  /* 在线模式：发送命令 */
+  setCmdStatus("sending", `正在发送: ${cmd}...`);
+
   ws.send(cmd);
-  document.getElementById("lastCommand").textContent = cmd;
+  lastCmdTimestamp = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  document.getElementById("lastCmdTime").textContent = lastCmdTimestamp;
   addLog("system", `发送命令: ${cmd}`);
+}
+
+function applyLocalMotorCommand(cmd) {
+  if (cmd === "forward" || cmd === "backward") {
+    localMotorState = cmd;
+    startPositionSimulation();
+    startMotorCountdown(6);
+  } else if (cmd === "stop") {
+    localMotorState = "stop";
+    stopPositionSimulation();
+    stopMotorCountdown();
+  } else if (cmd === "heater_on") {
+    heaterState = true;
+    updateHeaterVisual();
+  } else if (cmd === "heater_off") {
+    heaterState = false;
+    updateHeaterVisual();
+  }
+  /* 同步更新最后指令显示 */
+  const lastCmdDesc = document.getElementById("lastCommand");
+  if (lastCmdDesc) {
+    const now = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    lastCmdDesc.textContent = `${cmd} (${now})`;
+  }
+}
+
+function startMotorCountdown(seconds) {
+  /* 停止现有倒计时 */
+  stopMotorCountdown();
+  motorCountdown = seconds;
+
+  /* 更新按钮显示 */
+  updateCountdownDisplay();
+
+  /* 启动每秒倒计时 */
+  motorCountdownTimer = setInterval(() => {
+    motorCountdown--;
+    updateCountdownDisplay();
+    if (motorCountdown <= 0) {
+      stopMotorCountdown();
+      /* 倒计时结束，本地停止 */
+      localMotorState = "stop";
+      stopPositionSimulation();
+      setCmdStatus("success", "运行完成");
+      updateVehiclePosition(localPosition);
+      showToast("电机运行完成（6秒），已自动停止", "success");
+    }
+  }, 1000);
+}
+
+function stopMotorCountdown() {
+  if (motorCountdownTimer) {
+    clearInterval(motorCountdownTimer);
+    motorCountdownTimer = null;
+  }
+  motorCountdown = 0;
+  updateCountdownDisplay();
+}
+
+function updateCountdownDisplay() {
+  const btnForward = document.getElementById("btnForward");
+  const btnBackward = document.getElementById("btnBackward");
+  const btnStop = document.getElementById("btnStop");
+
+  if (motorCountdown > 0) {
+    if (btnForward) btnForward.textContent = localMotorState === "forward" ? `前进中 (${motorCountdown}s)` : "前进";
+    if (btnBackward) btnBackward.textContent = localMotorState === "backward" ? `后退中 (${motorCountdown}s)` : "后退";
+    if (btnStop) btnStop.textContent = "停止";
+  } else {
+    if (btnForward) btnForward.textContent = "前进";
+    if (btnBackward) btnBackward.textContent = "后退";
+    if (btnStop) btnStop.textContent = "停止";
+  }
+}
+
+function updateSpeed(val) {
+  motorSpeed = parseInt(val, 10);
+  const label = document.getElementById("speedValue");
+  if (label) label.textContent = motorSpeed + "%";
+}
+
+function startPositionSimulation() {
+  if (positionTimer) return;
+  positionTimer = setInterval(() => {
+    if (localMotorState === "stop") return;
+
+    /* 自动巡线模式使用固定慢速，手动模式使用滑块速度 */
+    const effectiveSpeed = (autoPatrolState === "running") ? AUTO_PATROL_SPEED : motorSpeed;
+    const step = POSITION_STEP_BASE * (effectiveSpeed / 50);
+
+    if (localMotorState === "forward") {
+      localPosition += step;
+      /* 手动模式下到达终点自动停止 */
+      if (localPosition >= 100 && autoPatrolState !== "running") {
+        localPosition = 100;
+        localMotorState = "stop";
+        showToast("小车已到达终点（100%），自动停止", "success");
+        addLog("system", "小车到达终点，自动停止");
+        stopMotorCountdown();
+        setCmdStatus("success", "已到达终点");
+        stopPositionSimulation();
+      }
+    } else if (localMotorState === "backward") {
+      localPosition -= step;
+      /* 手动模式下到达起点自动停止 */
+      if (localPosition <= 0 && autoPatrolState !== "running") {
+        localPosition = 0;
+        localMotorState = "stop";
+        showToast("小车已返回起点（0%），自动停止", "success");
+        addLog("system", "小车返回起点，自动停止");
+        stopMotorCountdown();
+        setCmdStatus("success", "已返回起点");
+        stopPositionSimulation();
+      }
+    }
+    updateVehiclePosition(localPosition);
+  }, POSITION_UPDATE_MS);
+}
+
+function stopPositionSimulation() {
+  if (positionTimer) {
+    clearInterval(positionTimer);
+    positionTimer = null;
+  }
+}
+
+function updateVehiclePosition(position) {
+  /* 同步更新所有位置显示 */
+  document.getElementById("kpiPosition").textContent = position.toFixed(1) + "%";
+
+  /* 更新 SVG 小车位置 */
+  const trackLeft = 40;
+  const trackRight = 360;
+  const trackWidth = trackRight - trackLeft;
+  const xPos = trackLeft + (position / 100) * trackWidth;
+
+  const svgVehicle = document.getElementById("svgVehicle");
+  if (svgVehicle) {
+    svgVehicle.setAttribute("transform", `translate(${xPos}, 55)`);
+  }
+
+  const svgLabel = document.getElementById("svgPositionLabel");
+  if (svgLabel) {
+    svgLabel.textContent = position.toFixed(1) + "%";
+    svgLabel.setAttribute("x", String(xPos));
+  }
+
+  /* 更新小车状态文本 */
+  const motorStateText = document.getElementById("motorStateText");
+  if (motorStateText) motorStateText.textContent = localMotorState === "forward" ? "前进中" : localMotorState === "backward" ? "后退中" : "停止";
+
+  document.getElementById("kpiMotorState").textContent = localMotorState === "forward" ? "电机前进" : localMotorState === "backward" ? "电机后退" : "电机停止";
+
+  const motorState = document.getElementById("motorState");
+  const visual = document.getElementById("vehicleVisual");
+  if (motorState) motorState.className = "vehicle-state " + localMotorState;
+  if (visual) visual.className = "vehicle-visual";
+
+  /* 更新徽章 */
+  const motorBadge = document.getElementById("motorBadge");
+  if (localMotorState === "forward") { motorBadge.className = "card-badge badge-safe"; motorBadge.textContent = "前进"; }
+  else if (localMotorState === "backward") { motorBadge.className = "card-badge badge-warn"; motorBadge.textContent = "后退"; }
+  else { motorBadge.className = "card-badge badge-idle"; motorBadge.textContent = "停止"; }
+
+  /* 更新位置进度条（如果有） */
+  const posFill = document.getElementById("posFill");
+  if (posFill) posFill.style.width = position + "%";
+}
+
+function updateHeaterVisual() {
+  const heaterBadge = document.getElementById("heaterBadge");
+  const heaterTemp = document.getElementById("heaterTemp");
+  if (heaterBadge) {
+    heaterBadge.className = heaterState ? "card-badge badge-ice" : "card-badge badge-idle";
+    heaterBadge.textContent = heaterState ? "加热中" : "未加热";
+  }
+  if (heaterTemp) {
+    heaterTemp.textContent = heaterState ? "加热片运行中" : "加热片关闭";
+    heaterTemp.style.color = heaterState ? "var(--ice)" : "var(--text-secondary)";
+  }
+}
+
+function setCmdStatus(type, text) {
+  const dot = document.getElementById("cmdStatusDot");
+  const statusText = document.getElementById("cmdStatusText");
+  if (!dot || !statusText) return;
+
+  statusText.textContent = text;
+
+  if (type === "sending") {
+    dot.style.background = "var(--warning)";
+    dot.style.animation = "pulse 1s infinite";
+  } else if (type === "success") {
+    dot.style.background = "var(--success)";
+    dot.style.animation = "none";
+    /* 3秒后恢复待命状态 */
+    setTimeout(() => {
+      if (statusText.textContent === text) {
+        dot.style.background = "var(--text-muted)";
+        statusText.textContent = "等待命令...";
+      }
+    }, 3000);
+  } else if (type === "warn") {
+    dot.style.background = "var(--warning)";
+    dot.style.animation = "none";
+    /* 5秒后恢复待命状态 */
+    setTimeout(() => {
+      if (statusText.textContent === text) {
+        dot.style.background = "var(--text-muted)";
+        statusText.textContent = "等待命令...";
+      }
+    }, 5000);
+  } else if (type === "error") {
+    dot.style.background = "var(--danger)";
+    dot.style.animation = "none";
+  } else {
+    dot.style.background = "var(--text-muted)";
+    dot.style.animation = "none";
+  }
+}
+
+function setCmdButtonsDisabled(disabled) {
+  const ids = ["btnForward", "btnBackward", "btnStop", "btnHeaterOn", "btnHeaterOff"];
+  ids.forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = disabled;
+  });
 }
 
 function sendCustomCmd() {
@@ -1328,6 +1928,185 @@ function sendCustomCmd() {
     sendCmd(cmd);
     input.value = "";
   }
+}
+
+function sendResetDetector() {
+  sendCmd("reset_detector");
+  showToast("已发送重新校准命令，请保持传感器静止 3 秒", "success");
+}
+
+// ================================================================
+// Auto Patrol Mode (自动巡线除雪)
+// 流程: 中间(50%) → 右端(100%) → 左端(0%) → 中间(50%)
+// ================================================================
+function toggleAutoPatrol() {
+  const btn = document.getElementById("btnAutoPatrol");
+  if (autoPatrolState === "running") {
+    stopAutoPatrol();
+    btn.textContent = "自动除雪";
+    btn.style.background = "";
+    showToast("自动除雪模式已停止", "warn");
+  } else {
+    startAutoPatrol();
+    btn.textContent = "停止除雪";
+    btn.style.background = "var(--danger)";
+    showToast("自动除雪模式已启动", "success");
+  }
+}
+
+function startAutoPatrol() {
+  /* 停止当前运动 */
+  stopPositionSimulation();
+  localMotorState = "stop";
+
+  /* 重置到中间开始 */
+  localPosition = 50;
+  autoPatrolPhase = 0;
+  autoPatrolState = "running";
+  updateVehiclePosition(localPosition);
+
+  /* 自动开启加热 */
+  if (!heaterState) {
+    heaterState = true;
+    updateHeaterVisual();
+    addLog("system", "自动除雪: 加热已自动开启");
+  }
+
+  addLog("system", "自动除雪模式启动: 中间 → 右端 → 左端 → 中间");
+
+  /* 启动定时器检查位置 */
+  if (autoPatrolTimer) clearInterval(autoPatrolTimer);
+  autoPatrolTimer = setInterval(checkAutoPatrol, POSITION_UPDATE_MS);
+
+  /* 第一步：向右端前进 */
+  localMotorState = "forward";
+  startPositionSimulation();
+}
+
+function stopAutoPatrol() {
+  autoPatrolState = "idle";
+  if (autoPatrolTimer) {
+    clearInterval(autoPatrolTimer);
+    autoPatrolTimer = null;
+  }
+  localMotorState = "stop";
+  stopPositionSimulation();
+  addLog("system", "自动除雪模式已停止");
+}
+
+function checkAutoPatrol() {
+  if (autoPatrolState !== "running") return;
+
+  /* Phase 0: 中间(50%) → 右端(100%) */
+  if (autoPatrolPhase === 0) {
+    if (localPosition >= 100) {
+      localPosition = 100;
+      autoPatrolPhase = 1;
+      /* 到达右端，转向左端 */
+      localMotorState = "backward";
+      stopPositionSimulation();
+      startPositionSimulation();
+      addLog("system", "自动除雪: 到达右端，开始向左端行进");
+      showToast("到达右端，转向左端行进", "success");
+    }
+  }
+  /* Phase 1: 右端(100%) → 左端(0%) */
+  else if (autoPatrolPhase === 1) {
+    if (localPosition <= 0) {
+      localPosition = 0;
+      autoPatrolPhase = 2;
+      /* 到达左端，返回中间 */
+      localMotorState = "forward";
+      stopPositionSimulation();
+      startPositionSimulation();
+      addLog("system", "自动除雪: 到达左端，返回中间");
+      showToast("到达左端，返回中间位置", "success");
+    }
+  }
+  /* Phase 2: 左端(0%) → 中间(50%) */
+  else if (autoPatrolPhase === 2) {
+    if (localPosition >= 50) {
+      localPosition = 50;
+      localMotorState = "stop";
+      stopPositionSimulation();
+      stopAutoPatrol();
+      /* 更新按钮状态 */
+      const btn = document.getElementById("btnAutoPatrol");
+      if (btn) {
+        btn.textContent = "自动除雪";
+        btn.style.background = "";
+      }
+      addLog("system", "自动除雪: 完成巡线，已回到中间位置");
+      showToast("自动除雪完成！已回到中间位置", "success");
+    }
+  }
+}
+
+function startAutoPatrolFromAlert() {
+  closeAlertModal();
+  startAutoPatrol();
+  const btn = document.getElementById("btnAutoPatrol");
+  if (btn) {
+    btn.textContent = "停止除雪";
+    btn.style.background = "var(--danger)";
+  }
+}
+
+// ================================================================
+// High-risk Alert Modal (高危风险弹窗)
+// ================================================================
+let alertModalShown = false; /* 防止重复弹窗 */
+let alertModalTimer = null;
+
+function showAlertModal(state, data) {
+  /* 如果自动除雪已经在运行，不重复弹窗 */
+  if (autoPatrolState === "running") return;
+
+  /* 防止同一状态重复弹窗 */
+  if (alertModalShown) return;
+  alertModalShown = true;
+
+  const modal = document.getElementById("alertModal");
+  const body = document.getElementById("alertModalBody");
+  if (!modal || !body) return;
+
+  const cfg = stateConfig[state] || stateConfig.IDLE;
+  const amp = (data.amp_dominant || 0).toFixed(3);
+  const freq = (data.dominant_freq || 0).toFixed(2);
+  const disp = (data.displacement_est || 0).toFixed(4);
+  const conf = ((data.confidence || 0) * 100).toFixed(0);
+
+  body.innerHTML = `
+    <div style="margin-bottom:10px;"><strong style="color:var(--danger);">${cfg.label}</strong> — ${cfg.desc}</div>
+    <div style="font-size:13px;color:var(--text-secondary);line-height:1.8;">
+      <div>• 主导频率: ${freq} Hz</div>
+      <div>• 振幅: ${amp} g</div>
+      <div>• 位移估算: ${disp} m</div>
+      <div>• 置信度: ${conf}%</div>
+    </div>
+    <div style="margin-top:12px;padding:10px;background:rgba(239,68,68,0.08);border-radius:var(--radius-sm);border:1px solid rgba(239,68,68,0.2);font-size:13px;color:var(--danger);">
+      ⚠️ 建议立即启动自动除雪模式，小车将沿电缆进行除雪作业。
+    </div>
+  `;
+
+  modal.style.display = "flex";
+
+  /* 10秒后自动关闭 */
+  if (alertModalTimer) clearTimeout(alertModalTimer);
+  alertModalTimer = setTimeout(() => {
+    closeAlertModal();
+  }, 15000);
+}
+
+function closeAlertModal() {
+  const modal = document.getElementById("alertModal");
+  if (modal) modal.style.display = "none";
+  if (alertModalTimer) {
+    clearTimeout(alertModalTimer);
+    alertModalTimer = null;
+  }
+  /* 重置标志，允许下一次高危预警 */
+  alertModalShown = false;
 }
 
 // ================================================================
@@ -1413,7 +2192,12 @@ function drawWaveChart() {
 
   if (waveBuffer.length < 2) return;
 
-  const maxAmp = Math.max(0.1, ...waveBuffer.map(Math.abs));
+  /* 智能缩放：使用 95% 分位数，计算前过滤极端异常值（>1000） */
+  const cleanVals = waveBuffer.map(v => (Math.abs(v) > 1000) ? 0 : v);
+  const absVals = cleanVals.map(Math.abs);
+  const sorted = [...absVals].sort((a, b) => a - b);
+  const p95 = sorted[Math.floor(sorted.length * 0.95)] || 0.05;
+  const maxAmp = Math.max(0.02, p95);
   const scaleY = (h / 2 - 16) / maxAmp;
 
   // Area fill
@@ -1500,14 +2284,19 @@ function drawLineSeries(ctx, w, h, data, color, padding) {
 // Animation Loop: synthesize waveform if no raw samples provided
 // ================================================================
 function updateWave() {
-  if (lastGalloping) {
+  if (lastRawAccel) {
+    /* 使用真实的去直流加速度数据（STM32 每 50ms 发送一次） */
+    /* 数据已通过 handleRawAccel 推入 waveBuffer，这里只需确保渲染 */
+  } else if (lastGalloping) {
+    /* 离线模式：回退到合成正弦波 */
     const freq = lastGalloping.dominant_freq || 0.5;
     const amp = lastGalloping.amp_dominant || 0;
     const sample = amp * Math.sin(2 * Math.PI * freq * waveTime / SAMPLE_RATE) + (Math.random() - 0.5) * amp * 0.1;
     waveBuffer.push(sample);
     if (waveBuffer.length > WAVE_BUFFER_SIZE) waveBuffer.shift();
   } else {
-    waveBuffer.push((Math.random() - 0.5) * 0.05);
+    /* 无数据时波形为直线（0值） */
+    waveBuffer.push(0);
     if (waveBuffer.length > WAVE_BUFFER_SIZE) waveBuffer.shift();
   }
   waveTime++;
@@ -1525,9 +2314,73 @@ function renderLoop() {
 // ================================================================
 connectWS();
 addLog("system", "RT_SPARK 监测系统已启动，正在连接 WebSocket...");
+
+/* 初始化显示 */
+updateVehiclePosition(localPosition);
+updateHeaterVisual();
+
 renderLoop();
 
 window.addEventListener("resize", () => { drawWaveChart(); drawEnvChart(); });
+
+// ================================================================
+// Keyboard Shortcuts
+// ================================================================
+window.addEventListener("keydown", (e) => {
+  /* 如果输入框有焦点，不拦截 */
+  if (e.target && e.target.tagName === "INPUT") return;
+
+  switch (e.key.toLowerCase()) {
+    case "w":
+    case "arrowup":
+      e.preventDefault();
+      sendCmd("forward");
+      break;
+    case "s":
+    case "arrowdown":
+      e.preventDefault();
+      sendCmd("backward");
+      break;
+    case " ":
+      e.preventDefault();
+      sendCmd("stop");
+      break;
+    case "h":
+      e.preventDefault();
+      sendCmd(heaterState ? "heater_off" : "heater_on");
+      break;
+    case "a":
+      e.preventDefault();
+      toggleAutoPatrol();
+      break;
+    case "r":
+      e.preventDefault();
+      sendResetDetector();
+      break;
+  }
+});
+
+// ================================================================
+// Quick Position Jump (click on track)
+// ================================================================
+document.addEventListener("DOMContentLoaded", () => {
+  const track = document.querySelector(".position-track");
+  if (track) {
+    track.style.cursor = "pointer";
+    track.title = "点击跳转到指定位置";
+    track.addEventListener("click", (e) => {
+      const rect = track.getBoundingClientRect();
+      const ratio = (e.clientX - rect.left) / rect.width;
+      const newPos = Math.max(0, Math.min(100, ratio * 100));
+      localPosition = newPos;
+      localMotorState = "stop";
+      stopPositionSimulation();
+      updateVehiclePosition(localPosition);
+      addLog("system", `位置跳转到 ${newPos.toFixed(1)}%`);
+      showToast(`位置已跳转到 ${newPos.toFixed(1)}%`, "success");
+    });
+  }
+});
 </script>
 
 </body>

@@ -77,12 +77,12 @@ gd_detector_t *gd_create(const char *name, int samp_rate, int win_size)
     det->win_size  = (win_size > 0)  ? win_size  : GD_WINDOW_SIZE;
     det->maf_win   = GD_MAF_WINDOW;
     det->overlap   = (win_size / 4 > 0) ? win_size / 4 : 1;
-    det->dc_alpha  = 0.001f;    /* 指数平滑系数：慢速跟踪重力 */
+    det->dc_alpha  = 0.20f;    /* 指数平滑系数：较快跟踪重力变化（晃动后可快速恢复，τ≈0.25s） */
 
-    /* 初始重力估计：假设传感器 Z 轴朝上（标准重力） */
+    /* 初始重力估计：假设传感器 Z 轴朝上（标准重力 9.80665 m/s²） */
     det->dc_x = 0.0f;
     det->dc_y = 0.0f;
-    det->dc_z = 9.81f;
+    det->dc_z = 9.80665f;
 
     /* 校准状态：前 3 秒（64 点）用于学习基线 */
     det->calibrating = 1;
@@ -152,6 +152,33 @@ const gd_feature_t *gd_last_feature(gd_detector_t *det)
 {
     if (det == RT_NULL || det->feature_valid == 0) return RT_NULL;
     return &det->last_feature;
+}
+
+void gd_get_dynamic_accel(gd_detector_t *det, float *dx, float *dy, float *dz)
+{
+    if (det == RT_NULL || dx == RT_NULL || dy == RT_NULL || dz == RT_NULL) return;
+
+    if (det->buf_count > 0 && !det->calibrating) {
+        /* 计算整个窗口的均值（二次去直流，确保发送的数据严格零均值） */
+        float sum_x = 0.0f, sum_y = 0.0f, sum_z = 0.0f;
+        int i, n = det->buf_count;
+        for (i = 0; i < n; i++) {
+            sum_x += det->buffer[i].x_filt;
+            sum_y += det->buffer[i].y_filt;
+            sum_z += det->buffer[i].z_filt;
+        }
+        float mean_x = sum_x / n;
+        float mean_y = sum_y / n;
+        float mean_z = sum_z / n;
+
+        int idx = (det->buf_head - 1 + det->win_size) % det->win_size;
+        gd_sample_t *s = &det->buffer[idx];
+        *dx = s->x_filt - mean_x;
+        *dy = s->y_filt - mean_y;
+        *dz = s->z_filt - mean_z;
+    } else {
+        *dx = *dy = *dz = 0.0f;
+    }
 }
 
 const char *gd_state_name(galloping_state_t state)
@@ -325,7 +352,6 @@ static float gd_calc_magnitude(float x, float y, float z)
 
 static void gd_extract_features(gd_detector_t *det, gd_feature_t *f)
 {
-    gd_sample_t *s;
     int i, count;
     float min_x, max_x, min_y, max_y, min_z, max_z;
     float sum_x, sum_y, sum_z, sum_mag, sum_sq_mag;
@@ -333,6 +359,8 @@ static void gd_extract_features(gd_detector_t *det, gd_feature_t *f)
     float prev_x, prev_y, prev_z;
     int   zc_x, zc_y, zc_z;
     float torsion_acc;
+    float mean_x, mean_y, mean_z;
+    float fx, fy, fz, mag;
 
     if (det == RT_NULL || f == RT_NULL) return;
     memset(f, 0, sizeof(gd_feature_t));
@@ -340,20 +368,34 @@ static void gd_extract_features(gd_detector_t *det, gd_feature_t *f)
     count = det->buf_count;
     if (count < 4) return;
 
-    /* ---- 振幅分析：峰-峰值 ---- */
-    s = &det->buffer[0];
-    min_x = max_x = s->x_filt;
-    min_y = max_y = s->y_filt;
-    min_z = max_z = s->z_filt;
+    /* ---- 第一步：计算窗口均值（二次去直流，确保静止时信号严格趋零） ---- */
+    sum_x = sum_y = sum_z = 0.0f;
+    for (i = 0; i < count; i++) {
+        sum_x += det->buffer[i].x_filt;
+        sum_y += det->buffer[i].y_filt;
+        sum_z += det->buffer[i].z_filt;
+    }
+    mean_x = sum_x / count;
+    mean_y = sum_y / count;
+    mean_z = sum_z / count;
+
+    /* ---- 第二步：振幅分析 — 峰-峰值（基于去均值后的值） ---- */
+    min_x = max_x = det->buffer[0].x_filt - mean_x;
+    min_y = max_y = det->buffer[0].y_filt - mean_y;
+    min_z = max_z = det->buffer[0].z_filt - mean_z;
     sum_x = sum_y = sum_z = sum_mag = sum_sq_mag = 0.0f;
     sum_sq_x = sum_sq_y = sum_sq_z = 0.0f;
 
-    prev_x = s->x_filt; prev_y = s->y_filt; prev_z = s->z_filt;
+    prev_x = det->buffer[0].x_filt - mean_x;
+    prev_y = det->buffer[0].y_filt - mean_y;
+    prev_z = det->buffer[0].z_filt - mean_z;
     zc_x = zc_y = zc_z = 0;
 
     for (i = 0; i < count; i++) {
-        s = &det->buffer[i];
-        float fx = s->x_filt, fy = s->y_filt, fz = s->z_filt;
+        fx = det->buffer[i].x_filt - mean_x;
+        fy = det->buffer[i].y_filt - mean_y;
+        fz = det->buffer[i].z_filt - mean_z;
+        mag = sqrtf(fx * fx + fy * fy + fz * fz);
 
         /* 峰-峰值追踪 */
         if (fx < min_x) min_x = fx;
@@ -366,8 +408,8 @@ static void gd_extract_features(gd_detector_t *det, gd_feature_t *f)
         /* 累积统计 */
         sum_x += fx;  sum_y += fy;  sum_z += fz;
         sum_sq_x += fx * fx; sum_sq_y += fy * fy; sum_sq_z += fz * fz;
-        sum_mag    += s->magnitude;
-        sum_sq_mag += s->magnitude * s->magnitude;
+        sum_mag    += mag;
+        sum_sq_mag += mag * mag;
 
         /* 过零检测 */
         if (i > 0) {

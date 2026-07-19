@@ -208,6 +208,11 @@ int rt_hw_i2c_init(void)
         RT_ASSERT(result == RT_EOK);
         stm32_i2c_bus_unlock(&soft_i2c_config[i]);
 
+        rt_kprintf("[I2C-SOFT] registered %s scl=%d sda=%d (BNO pullup probe)\n",
+                   soft_i2c_config[i].bus_name,
+                   soft_i2c_config[i].scl,
+                   soft_i2c_config[i].sda);
+
         LOG_D("software simulation %s init done, pin scl: %d, pin sda %d",
         soft_i2c_config[i].bus_name,
         soft_i2c_config[i].scl,

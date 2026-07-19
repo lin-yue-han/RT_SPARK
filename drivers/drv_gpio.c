@@ -274,9 +274,12 @@ static void stm32_pin_mode(rt_device_t dev, rt_base_t pin, rt_base_t mode)
     }
     else if (mode == PIN_MODE_OUTPUT_OD)
     {
-        /* output setting: od. */
+        /* output setting: od.
+         * RT_SPARK soft-I2C BNO055 wiring has no external pull-up on PB10/PB11;
+         * keep OD pins weakly pulled high so an idle I2C bus is actually high.
+         */
         GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Pull = GPIO_PULLUP;
     }
 
     HAL_GPIO_Init(PIN_STPORT(pin), &GPIO_InitStruct);

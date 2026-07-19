@@ -42,5 +42,21 @@ int bn0055_init(void);
 int bn0055_read(bn0055_data_t *data);
 int bn0055_set_mode(uint8_t mode);
 
+/* 远程命令接收接口（从 UART1 共享通道中提取非 BNO055 协议数据） */
+#define CMD_BUF_SIZE 128
+
+/**
+ * @brief 获取一条从 UART1 接收到的远程命令
+ * @param buf 输出缓冲区，至少 CMD_BUF_SIZE 字节
+ * @param timeout_ms 等待超时（毫秒），0 表示非阻塞
+ * @return RT_EOK 成功，-RT_ETIMEOUT 超时，-RT_ERROR 错误
+ */
+int cmd_get_remote_command(char *buf, int timeout_ms);
+
+/**
+ * @brief 初始化远程命令接收信号量（应在系统启动后调用一次）
+ */
+void cmd_sem_init(void);
+
 #endif /* __GY_BN0055_H__ */
 

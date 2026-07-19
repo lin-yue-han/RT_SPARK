@@ -12,11 +12,14 @@
 #include "gy_bn0055.h"
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
+#include <stdlib.h>
+#include <board.h>
 
 /* BNO055 使用 UART1(PA9/PA10)，控制台的 JSON 输出从 PA9(TX) 发送，
  * 也会到达 BNO055 的 RX。BNO055 UART 协议以 0xAA 为帧头，收到非 0xAA
  * 数据会忽略，所以控制台 JSON 不会干扰正确解析。 */
-#define UART_NAME       "uart1"
+#define UART_NAME       "uart3"
 #define UART_BAUDRATE   115200
 
 /* 模拟数据控制 */
@@ -26,6 +29,103 @@ static volatile int g_sim_disturb = 0;   /* 1=触发模拟扰动 */
 static float g_sim_base_x = 0.0f;
 static float g_sim_base_y = 0.0f;
 static float g_sim_base_z = 9.81f;
+static int g_bno_probe_debug = 1;
+
+/* 远程命令接收缓冲区（与 BNO055 共享 UART1 RX） */
+static char g_cmd_buffer[CMD_BUF_SIZE];
+static int g_cmd_pos = 0;
+static rt_sem_t g_cmd_sem = RT_NULL;
+
+static void bno055_gpio_diag(void)
+{
+    rt_base_t pb10 = GET_PIN(B, 10);
+    rt_base_t pb11 = GET_PIN(B, 11);
+
+    rt_pin_mode(pb10, PIN_MODE_OUTPUT_OD);
+    rt_pin_mode(pb11, PIN_MODE_OUTPUT_OD);
+    rt_pin_write(pb10, PIN_HIGH);
+    rt_pin_write(pb11, PIN_HIGH);
+    rt_thread_mdelay(2);
+    rt_kprintf("[BN0055-GPIO] OD idle PB10=%d PB11=%d\n",
+               rt_pin_read(pb10), rt_pin_read(pb11));
+
+    rt_pin_mode(pb10, PIN_MODE_INPUT_PULLUP);
+    rt_pin_mode(pb11, PIN_MODE_INPUT_PULLUP);
+    rt_thread_mdelay(2);
+    rt_kprintf("[BN0055-GPIO] input_pullup PB10=%d PB11=%d\n",
+               rt_pin_read(pb10), rt_pin_read(pb11));
+
+    rt_pin_mode(pb10, PIN_MODE_OUTPUT_OD);
+    rt_pin_mode(pb11, PIN_MODE_OUTPUT_OD);
+    rt_pin_write(pb10, PIN_LOW);
+    rt_pin_write(pb11, PIN_HIGH);
+    rt_thread_mdelay(2);
+    rt_kprintf("[BN0055-GPIO] PB10_low PB10=%d PB11=%d\n",
+               rt_pin_read(pb10), rt_pin_read(pb11));
+
+    rt_pin_write(pb10, PIN_HIGH);
+    rt_pin_write(pb11, PIN_LOW);
+    rt_thread_mdelay(2);
+    rt_kprintf("[BN0055-GPIO] PB11_low PB10=%d PB11=%d\n",
+               rt_pin_read(pb10), rt_pin_read(pb11));
+
+    rt_pin_write(pb10, PIN_HIGH);
+    rt_pin_write(pb11, PIN_HIGH);
+    rt_thread_mdelay(2);
+}
+
+/**
+ * @brief 保存单个字符到远程命令缓冲区
+ */
+static void cmd_save_char(char ch)
+{
+    if (ch >= 0x20 && ch <= 0x7E) {  /* 可打印 ASCII */
+        if (g_cmd_pos < CMD_BUF_SIZE - 1) {
+            g_cmd_buffer[g_cmd_pos++] = ch;
+        }
+    } else if (ch == '\n' || ch == '\r') {
+        if (g_cmd_pos > 0) {
+            g_cmd_buffer[g_cmd_pos] = '\0';
+            g_cmd_pos = 0;
+            if (g_cmd_sem != RT_NULL) {
+                rt_sem_release(g_cmd_sem);
+            }
+        }
+    }
+}
+
+/**
+ * @brief 初始化远程命令接收信号量
+ */
+void cmd_sem_init(void)
+{
+    if (g_cmd_sem == RT_NULL) {
+        g_cmd_sem = rt_sem_create("cmd_sem", 0, RT_IPC_FLAG_FIFO);
+    }
+}
+
+/**
+ * @brief 获取一条从 UART1 接收到的远程命令
+ */
+int cmd_get_remote_command(char *buf, int timeout_ms)
+{
+    if (g_cmd_sem == RT_NULL) {
+        return -RT_ERROR;
+    }
+
+    rt_err_t ret = rt_sem_take(g_cmd_sem, rt_tick_from_millisecond(timeout_ms));
+    if (ret != RT_EOK) {
+        return -RT_ETIMEOUT;
+    }
+
+    /* 复制命令到输出缓冲区 */
+    rt_enter_critical();
+    rt_strncpy(buf, g_cmd_buffer, CMD_BUF_SIZE);
+    buf[CMD_BUF_SIZE - 1] = '\0';
+    rt_exit_critical();
+
+    return RT_EOK;
+}
 
 /* BNO055 UART 协议常量 */
 #define BNO055_START_BYTE     0xAA
@@ -51,14 +151,56 @@ static float g_sim_base_z = 9.81f;
 #define BNO055_MODE_NDOF        0x0C
 
 static rt_device_t uart_dev = RT_NULL;
+static struct rt_i2c_bus_device *bno_i2c_bus = RT_NULL;
+static uint8_t bno_i2c_addr = 0x28;
+static int g_bno_i2c_mode = 0;
+
+static int bno055_i2c_read_reg(uint8_t reg, uint8_t *buf, uint8_t len)
+{
+    struct rt_i2c_msg msgs[2];
+
+    if (bno_i2c_bus == RT_NULL || buf == RT_NULL || len == 0) {
+        return -RT_ERROR;
+    }
+
+    msgs[0].addr  = bno_i2c_addr;
+    msgs[0].flags = RT_I2C_WR;
+    msgs[0].len   = 1;
+    msgs[0].buf   = &reg;
+    msgs[1].addr  = bno_i2c_addr;
+    msgs[1].flags = RT_I2C_RD;
+    msgs[1].len   = len;
+    msgs[1].buf   = buf;
+
+    return (rt_i2c_transfer(bno_i2c_bus, msgs, 2) == 2) ? RT_EOK : -RT_ERROR;
+}
+
+static int bno055_i2c_write_reg(uint8_t reg, uint8_t val)
+{
+    uint8_t tx[2] = {reg, val};
+    struct rt_i2c_msg msg;
+
+    if (bno_i2c_bus == RT_NULL) {
+        return -RT_ERROR;
+    }
+
+    msg.addr  = bno_i2c_addr;
+    msg.flags = RT_I2C_WR;
+    msg.len   = 2;
+    msg.buf   = tx;
+
+    return (rt_i2c_transfer(bno_i2c_bus, &msg, 1) == 1) ? RT_EOK : -RT_ERROR;
+}
 
 /**
- * @brief 清空 UART RX 缓冲区（丢弃所有已接收数据）
+ * @brief 清空 UART RX 缓冲区（同时保存 ASCII 命令数据到全局缓冲区）
  */
 static void uart_flush_rx(void)
 {
     char ch;
-    while (rt_device_read(uart_dev, 0, &ch, 1) == 1) {}
+    while (rt_device_read(uart_dev, 0, &ch, 1) == 1) {
+        cmd_save_char(ch);
+    }
 }
 
 /**
@@ -94,8 +236,10 @@ static int bno055_uart_read_reg(uint8_t reg, uint8_t *buf, uint8_t len)
 {
     uint8_t tx[4] = {BNO055_START_BYTE, BNO055_READ_CMD, reg, len};
     uint8_t rx[2];
+    uint8_t raw[16];
     int     rd;
     int     i;
+    int     raw_len = 0;
 
     if (uart_dev == RT_NULL) return -RT_ERROR;
 
@@ -104,14 +248,25 @@ static int bno055_uart_read_reg(uint8_t reg, uint8_t *buf, uint8_t len)
 
     /* 发送读取命令 */
     rt_device_write(uart_dev, 0, tx, 4);
+    if (g_bno_probe_debug && reg == BNO055_REG_CHIP_ID) {
+        rt_kprintf("[BN0055-PROBE] %s TX: %02X %02X %02X %02X\n",
+                   UART_NAME, tx[0], tx[1], tx[2], tx[3]);
+    }
     rt_thread_mdelay(50);
 
-    /* 等待应答帧头（跳过控制台 JSON 输出的干扰字节） */
+    /* 等待应答帧头（非 BNO055 响应字节保存到命令缓冲区） */
     rx[0] = 0;
     for (i = 0; i < 50; i++) {  /* 最多尝试 50 次，约 250ms */
         rd = uart_read_bytes(&rx[0], 1, 10);
         if (rd == 1 && (rx[0] == BNO055_RESP_SUCCESS || rx[0] == BNO055_RESP_ERROR)) {
             break;
+        }
+        /* 如果不是 BNO055 响应数据，尝试保存为命令 */
+        if (rd == 1) {
+            if (raw_len < (int)sizeof(raw)) {
+                raw[raw_len++] = rx[0];
+            }
+            cmd_save_char((char)rx[0]);
         }
     }
 
@@ -122,6 +277,13 @@ static int bno055_uart_read_reg(uint8_t reg, uint8_t *buf, uint8_t len)
         return -RT_ERROR;
     }
     if (rx[0] != BNO055_RESP_SUCCESS) {
+        if (g_bno_probe_debug && reg == BNO055_REG_CHIP_ID) {
+            rt_kprintf("[BN0055-PROBE] %s no 0xBB/0xEE response, raw_len=%d", UART_NAME, raw_len);
+            for (i = 0; i < raw_len; i++) {
+                rt_kprintf(" %02X", raw[i]);
+            }
+            rt_kprintf("\n");
+        }
         return -RT_ERROR;
     }
 
@@ -161,12 +323,16 @@ static int bno055_uart_write_reg(uint8_t reg, uint8_t val)
     rt_device_write(uart_dev, 0, tx, 5);
     rt_thread_mdelay(50);
 
-    /* 等待应答帧头 */
+    /* 等待应答帧头（非 BNO055 响应字节保存到命令缓冲区） */
     rx[0] = 0;
     for (i = 0; i < 50; i++) {
         rd = uart_read_bytes(&rx[0], 1, 10);
         if (rd == 1 && (rx[0] == BNO055_RESP_SUCCESS || rx[0] == BNO055_RESP_ERROR)) {
             break;
+        }
+        /* 如果不是 BNO055 响应数据，尝试保存为命令 */
+        if (rd == 1) {
+            cmd_save_char((char)rx[0]);
         }
     }
 
@@ -184,6 +350,18 @@ static int bno055_uart_write_reg(uint8_t reg, uint8_t val)
     }
 
     return RT_EOK;
+}
+
+static int bno055_read_reg(uint8_t reg, uint8_t *buf, uint8_t len)
+{
+    return g_bno_i2c_mode ? bno055_i2c_read_reg(reg, buf, len)
+                          : bno055_uart_read_reg(reg, buf, len);
+}
+
+static int bno055_write_reg(uint8_t reg, uint8_t val)
+{
+    return g_bno_i2c_mode ? bno055_i2c_write_reg(reg, val)
+                          : bno055_uart_write_reg(reg, val);
 }
 
 /**
@@ -246,22 +424,22 @@ int bn0055_read(bn0055_data_t *data)
         return RT_EOK;
     }
 
-    if (data == RT_NULL || uart_dev == RT_NULL) return -RT_ERROR;
+    if (data == RT_NULL || (!g_bno_i2c_mode && uart_dev == RT_NULL)) return -RT_ERROR;
     memset(data, 0, sizeof(bn0055_data_t));
 
     /* 1. 读取加速度 (6 bytes) */
-    ret = bno055_uart_read_reg(BNO055_REG_ACC_X_LSB, buf, 6);
+    ret = bno055_read_reg(BNO055_REG_ACC_X_LSB, buf, 6);
     if (ret == RT_EOK) {
-        raw = bno055_int16_le(&buf[0]); data->accel_x = raw * 0.01f;   /* 1 LSB = 1 mg */
-        raw = bno055_int16_le(&buf[2]); data->accel_y = raw * 0.01f;
-        raw = bno055_int16_le(&buf[4]); data->accel_z = raw * 0.01f;
+        raw = bno055_int16_le(&buf[0]); data->accel_x = raw * 0.001f * 9.80665f;   /* 1 LSB = 1 mg, 精确转 m/s² */
+        raw = bno055_int16_le(&buf[2]); data->accel_y = raw * 0.001f * 9.80665f;
+        raw = bno055_int16_le(&buf[4]); data->accel_z = raw * 0.001f * 9.80665f;
     } else {
         rt_kprintf("[BN0055] Read ACC failed (ret=%d)\n", ret);
         return ret;
     }
 
     /* 2. 读取陀螺仪 (6 bytes) */
-    ret = bno055_uart_read_reg(BNO055_REG_GYR_X_LSB, buf, 6);
+    ret = bno055_read_reg(BNO055_REG_GYR_X_LSB, buf, 6);
     if (ret == RT_EOK) {
         raw = bno055_int16_le(&buf[0]); data->gyro_x = raw * 0.0625f; /* 1 LSB = 1/16 deg/s */
         raw = bno055_int16_le(&buf[2]); data->gyro_y = raw * 0.0625f;
@@ -269,7 +447,7 @@ int bn0055_read(bn0055_data_t *data)
     }
 
     /* 3. 读取欧拉角 (6 bytes) */
-    ret = bno055_uart_read_reg(BNO055_REG_EUL_H_LSB, buf, 6);
+    ret = bno055_read_reg(BNO055_REG_EUL_H_LSB, buf, 6);
     if (ret == RT_EOK) {
         raw = bno055_int16_le(&buf[0]); data->euler_heading = raw * 0.0625f;
         raw = bno055_int16_le(&buf[2]); data->euler_roll    = raw * 0.0625f;
@@ -287,19 +465,19 @@ int bn0055_set_mode(uint8_t mode)
 {
     int ret;
 
-    if (uart_dev == RT_NULL) return -RT_ERROR;
+    if (!g_bno_i2c_mode && uart_dev == RT_NULL) return -RT_ERROR;
 
     /* 先切换到 CONFIG_MODE */
-    ret = bno055_uart_write_reg(BNO055_REG_OPR_MODE, BNO055_MODE_CONFIG);
+    ret = bno055_write_reg(BNO055_REG_OPR_MODE, BNO055_MODE_CONFIG);
     if (ret != RT_EOK) return ret;
     rt_thread_mdelay(20);
 
     /* 再切换到目标模式 */
-    ret = bno055_uart_write_reg(BNO055_REG_OPR_MODE, mode);
+    ret = bno055_write_reg(BNO055_REG_OPR_MODE, mode);
     if (ret != RT_EOK) return ret;
     rt_thread_mdelay(100);
 
-    rt_kprintf("BN0055: UART set mode 0x%02X OK\n", mode);
+    rt_kprintf("BN0055: %s set mode 0x%02X OK\n", g_bno_i2c_mode ? "I2C" : "UART", mode);
     return RT_EOK;
 }
 
@@ -311,6 +489,36 @@ int bn0055_init(void)
     rt_err_t ret;
     uint8_t  chip_id = 0;
     int      i;
+    struct serial_configure cfg = RT_SERIAL_CONFIG_DEFAULT;
+    uint8_t  addrs[2] = {0x28, 0x29};
+
+    g_sim_mode = 0;
+    g_bno_i2c_mode = 0;
+
+    bno055_gpio_diag();
+
+    bno_i2c_bus = rt_i2c_bus_device_find("i2c2");
+    if (bno_i2c_bus != RT_NULL) {
+        for (i = 0; i < 2; i++) {
+            bno_i2c_addr = addrs[i];
+            chip_id = 0;
+            ret = bno055_i2c_read_reg(BNO055_REG_CHIP_ID, &chip_id, 1);
+            rt_kprintf("[BN0055-I2C-PROBE] i2c2 addr=0x%02X ret=%d id=0x%02X\n",
+                       bno_i2c_addr, ret, chip_id);
+            if (ret == RT_EOK && chip_id == 0xA0) {
+                g_bno_i2c_mode = 1;
+                rt_kprintf("BN0055: I2C CHIP_ID OK addr=0x%02X\n", bno_i2c_addr);
+                bno055_i2c_write_reg(BNO055_REG_PWR_MODE, 0x00);
+                rt_thread_mdelay(10);
+                bn0055_set_mode(BNO055_MODE_NDOF);
+                rt_kprintf("BN0055: Init OK (I2C, i2c2)\n");
+                return RT_EOK;
+            }
+        }
+        rt_kprintf("BN0055: I2C probe failed on i2c2, fallback to UART3\n");
+    } else {
+        rt_kprintf("BN0055: I2C bus 'i2c2' not found, fallback to UART3\n");
+    }
 
     uart_dev = rt_device_find(UART_NAME);
     if (uart_dev == RT_NULL) {
@@ -318,14 +526,26 @@ int bn0055_init(void)
         return -RT_ERROR;
     }
 
-    ret = rt_device_open(uart_dev, RT_DEVICE_OFLAG_RDWR);
+    cfg.baud_rate = BAUD_RATE_115200;
+    cfg.data_bits = DATA_BITS_8;
+    cfg.stop_bits = STOP_BITS_1;
+    cfg.parity = PARITY_NONE;
+    rt_device_control(uart_dev, RT_DEVICE_CTRL_CONFIG, &cfg);
+
+    ret = rt_device_open(uart_dev, RT_DEVICE_OFLAG_RDWR | RT_DEVICE_FLAG_INT_RX);
     if (ret != RT_EOK) {
         rt_kprintf("BN0055: Failed to open UART (ret=%d)\n", ret);
         return -RT_ERROR;
     }
 
-    /* 读取 CHIP_ID 验证设备（使用 UART 二进制协议） */
-    ret = bno055_uart_read_reg(BNO055_REG_CHIP_ID, &chip_id, 1);
+    /* Read CHIP_ID with retries; BNO055 may need time after power-up. */
+    for (i = 0; i < 10; i++) {
+        ret = bno055_uart_read_reg(BNO055_REG_CHIP_ID, &chip_id, 1);
+        if (ret == RT_EOK && chip_id == 0xA0) {
+            break;
+        }
+        rt_thread_mdelay(100);
+    }
     if (ret != RT_EOK || chip_id != 0xA0) {
         rt_kprintf("BN0055: CHIP_ID error! ret=%d, id=0x%02X (expect 0xA0)\n", ret, chip_id);
         rt_kprintf("BN0055: Switching to SIMULATION mode (no hardware BNO055)\n");
@@ -336,7 +556,7 @@ int bn0055_init(void)
     rt_kprintf("BN0055: CHIP_ID OK (0xA0)\n");
 
     /* 设置 PWR_MODE = NORMAL */
-    bno055_uart_write_reg(BNO055_REG_PWR_MODE, 0x00);
+    bno055_write_reg(BNO055_REG_PWR_MODE, 0x00);
     rt_thread_mdelay(10);
 
     /* 设置 NDOF 模式 */

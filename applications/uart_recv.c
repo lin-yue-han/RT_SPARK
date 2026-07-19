@@ -13,11 +13,15 @@
 #define UART_NAME       "uart2"     /* UART2: PA2(TX)/PA3(RX) → Core-Y100M 4G */
 #define UART_BAUDRATE   115200
 #define RX_BUF_SIZE     256
+#define DTU_AUTO_CONFIG_ON_BOOT 1
 
 /* ==================== Global Variables ==================== */
 static rt_device_t serial  = RT_NULL;
 static rt_sem_t    rx_sem  = RT_NULL;
 static char rx_buffer[RX_BUF_SIZE];
+volatile int g4_config_busy = 0;
+
+int uart_recv_init(void);
 
 /* ==================== UART Receive Callback ==================== */
 static rt_err_t uart_rx_callback(rt_device_t dev, rt_size_t size)
@@ -34,7 +38,7 @@ static void serial_recv_thread_entry(void *parameter)
     char ch;
     int  index = 0;
 
-    rt_kprintf("[4G] receive thread started\n");
+    rt_kprintf("[4G] Wireless command receiver started\n");
 
     while (1)
     {
@@ -50,7 +54,42 @@ static void serial_recv_thread_entry(void *parameter)
             {
                 if (index > 1) {  /* 忽略只有 \r 或 \n 的空行 */
                     rx_buffer[index] = '\0';
-                    rt_kprintf("[4G] %s", rx_buffer);
+                    rt_kprintf("[4G] RX: %s\n", rx_buffer);
+
+                    /* 解析并执行远程命令 */
+                    if (rt_strcmp(rx_buffer, "forward") == 0) {
+                        extern void start_motor_with_timeout(int dir);
+                        start_motor_with_timeout(1);
+                        rt_kprintf("[4G-CMD] -> FORWARD executed\n");
+                    }
+                    else if (rt_strcmp(rx_buffer, "backward") == 0) {
+                        extern void start_motor_with_timeout(int dir);
+                        start_motor_with_timeout(-1);
+                        rt_kprintf("[4G-CMD] -> BACKWARD executed\n");
+                    }
+                    else if (rt_strcmp(rx_buffer, "stop") == 0) {
+                        extern void stop(void);
+                        stop();
+                        rt_kprintf("[4G-CMD] -> STOP executed\n");
+                    }
+                    else if (rt_strcmp(rx_buffer, "heater_on") == 0) {
+                        extern void heater_on(void);
+                        heater_on();
+                        rt_kprintf("[4G-CMD] -> HEATER ON executed\n");
+                    }
+                    else if (rt_strcmp(rx_buffer, "heater_off") == 0) {
+                        extern void heater_off(void);
+                        heater_off();
+                        rt_kprintf("[4G-CMD] -> HEATER OFF executed\n");
+                    }
+                    else if (rt_strcmp(rx_buffer, "reset_detector") == 0) {
+                        extern void gd_reset_detector(void);
+                        gd_reset_detector();
+                        rt_kprintf("[4G-CMD] -> DETECTOR RESET executed\n");
+                    }
+                    else {
+                        rt_kprintf("[4G-CMD] Unknown: %s\n", rx_buffer);
+                    }
                 }
                 index = 0;
                 rt_memset(rx_buffer, 0, RX_BUF_SIZE);
@@ -79,8 +118,93 @@ rt_err_t g4_send_text(const char *text)
     return written == length ? RT_EOK : -RT_ERROR;
 }
 
+static rt_err_t g4_send_line(const char *text)
+{
+    if (g4_send_text(text) != RT_EOK) {
+        return -RT_ERROR;
+    }
+
+    return g4_send_text("\r\n");
+}
+
+static rt_err_t ensure_uart2_ready(void)
+{
+    if (serial != RT_NULL) {
+        return RT_EOK;
+    }
+
+    return uart_recv_init();
+}
+
+void dtu_cmd(int argc, char **argv)
+{
+    if (argc < 2) {
+        rt_kprintf("Usage: dtu_cmd <text-without-spaces>\n");
+        rt_kprintf("Example: dtu_cmd config,set,save\n");
+        return;
+    }
+
+    if (ensure_uart2_ready() != RT_EOK) {
+        rt_kprintf("[4G-CONFIG] UART2 not ready\n");
+        return;
+    }
+
+    rt_kprintf("[4G-CONFIG] TX: %s\n", argv[1]);
+    if (g4_send_line(argv[1]) != RT_EOK) {
+        rt_kprintf("[4G-CONFIG] send failed\n");
+    }
+}
+
+void dtu_config(void)
+{
+    static const char *cmds[] = {
+        "config,set,tcp,1,ttluart,0,0,,0,frp-oil.com,32762,0,,0,,0,0,0,0,0",
+        "config,set,save",
+        "config,set,reboot",
+    };
+    int i;
+
+    if (ensure_uart2_ready() != RT_EOK) {
+        rt_kprintf("[4G-CONFIG] UART2 not ready\n");
+        return;
+    }
+
+    g4_config_busy = 1;
+    rt_thread_mdelay(300);
+
+    rt_kprintf("[4G-CONFIG] Core-Y100P TCP client -> frp-oil.com:32762\n");
+    for (i = 0; i < (int)(sizeof(cmds) / sizeof(cmds[0])); i++) {
+        rt_kprintf("[4G-CONFIG] TX: %s\n", cmds[i]);
+        if (g4_send_line(cmds[i]) != RT_EOK) {
+            rt_kprintf("[4G-CONFIG] send failed at step %d\n", i + 1);
+            g4_config_busy = 0;
+            return;
+        }
+        rt_thread_mdelay(2500);
+    }
+    rt_thread_mdelay(15000);
+    g4_config_busy = 0;
+    rt_kprintf("[4G-CONFIG] done, wait 30-60s for module reboot/register/connect\n");
+}
+
+#if DTU_AUTO_CONFIG_ON_BOOT
+static void dtu_auto_config_thread_entry(void *parameter)
+{
+    RT_UNUSED(parameter);
+
+    rt_kprintf("[4G-CONFIG] auto config scheduled, waiting 45s for shared power DTU boot...\n");
+    rt_thread_mdelay(45000);
+    dtu_config();
+
+    rt_kprintf("[4G-CONFIG] backup auto config scheduled, waiting another 75s...\n");
+    rt_thread_mdelay(75000);
+    dtu_config();
+}
+#endif
+
 /* ==================== Initialization Function ==================== */
-static int uart_recv_init(void)
+/* 导出为全局函数，供 main.c 调用 */
+int uart_recv_init(void)
 {
     rt_err_t ret;
     struct serial_configure config = RT_SERIAL_CONFIG_DEFAULT;
@@ -135,8 +259,26 @@ static int uart_recv_init(void)
     rt_thread_startup(thread);
     rt_kprintf("[4G] Ready, waiting for Core-Y100M data on %s\n", UART_NAME);
 
+#if DTU_AUTO_CONFIG_ON_BOOT
+    rt_thread_t cfg_thread = rt_thread_create(
+        "dtu_cfg",
+        dtu_auto_config_thread_entry,
+        RT_NULL,
+        1024,
+        18,
+        10
+    );
+    if (cfg_thread != RT_NULL) {
+        rt_thread_startup(cfg_thread);
+    } else {
+        rt_kprintf("[4G-CONFIG] auto config thread create failed\n");
+    }
+#endif
+
     return RT_EOK;
 }
 
-/* 手动初始化命令，系统启动后在 finsh 输入 uart_recv_init */
-MSH_CMD_EXPORT(uart_recv_init, start UART2 receive for Core-Y100M 4G);
+/* MSH 命令导出（可选，用于手动调试） */
+MSH_CMD_EXPORT(uart_recv_init, start UART2 wireless command receiver);
+MSH_CMD_EXPORT(dtu_cmd, send one raw line to Core-Y100P over UART2);
+MSH_CMD_EXPORT(dtu_config, configure Core-Y100P TCP client for RT_SPARK);

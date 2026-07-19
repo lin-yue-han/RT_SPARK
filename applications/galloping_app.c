@@ -104,6 +104,13 @@ static void galloping_thread_entry(void *parameter)
                        bno.accel_x, bno.accel_y, bno.accel_z,
                        bno.euler_roll, bno.euler_pitch);
 
+        /* 每帧发送去直流后的动态加速度到网页，用于实时波形显示 */
+        if (dtu_is_ready()) {
+            float dx, dy, dz;
+            gd_get_dynamic_accel(g_detector, &dx, &dy, &dz);
+            dtu_send_raw_accel(dx, dy, dz);
+        }
+
         if (feat != RT_NULL) {
             /* 窗口分析完成，输出特征 */
             gd_feature_print(feat);
@@ -221,6 +228,17 @@ static void galloping_stat(void)
 MSH_CMD_EXPORT(galloping_stat, show last galloping stats);
 
 /**
+ * @brief 公开接口：重置检测器（供 main.c 远程命令调用）
+ */
+void gd_reset_detector(void)
+{
+    if (g_detector != RT_NULL) {
+        gd_reset(g_detector);
+        rt_kprintf("[Galloping] Detector reset by remote command\n");
+    }
+}
+
+/**
  * @brief 重置检测器（传感器位置变化后调用）
  *        msh: galloping_reset
  */
@@ -239,7 +257,7 @@ MSH_CMD_EXPORT(galloping_reset, reset galloping detector);
  * DTU 定时上报线程（温湿度 + 心跳）
  * ================================================================ */
 
-#define DTU_REPORT_STACK_SIZE   1536
+#define DTU_REPORT_STACK_SIZE   4096
 #define DTU_REPORT_PRIORITY     15
 
 /**
