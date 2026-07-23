@@ -1,0 +1,13 @@
+from building import *
+
+cwd = GetCurrentDir()
+
+src = Glob('*.c')
+
+path = [cwd]
+path += [cwd + '/../cubemx/Inc']
+path += [cwd + '/../drivers']
+
+group = DefineGroup('applications', src, depend = [''], CPPPATH = path)
+
+Return('group')

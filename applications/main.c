@@ -25,6 +25,8 @@
 #include "gy_bn0055.h"
 
 #define DTU_UART_DIAG_MODE 0
+#define MOTOR_BOOT_SELF_TEST 0
+#define MOTOR_POWER_ON_SEQUENCE_TEST 0
 
 /* 外部函数声明 */
 extern void sensor_init_all(void);
@@ -110,8 +112,9 @@ static void left_motor(int speed)
         rt_pin_write(LEFT_AIN1, PIN_LOW);
         rt_pin_write(LEFT_AIN2, PIN_HIGH);
     } else {
-        rt_pin_write(LEFT_AIN1, PIN_LOW);
-        rt_pin_write(LEFT_AIN2, PIN_LOW);
+        /* TB6612: IN1=HIGH, IN2=HIGH enables short-brake for a harder stop. */
+        rt_pin_write(LEFT_AIN1, PIN_HIGH);
+        rt_pin_write(LEFT_AIN2, PIN_HIGH);
     }
 }
 
@@ -125,8 +128,9 @@ static void right_motor(int speed)
         rt_pin_write(RIGHT_BIN1, PIN_LOW);
         rt_pin_write(RIGHT_BIN2, PIN_HIGH);
     } else {
-        rt_pin_write(RIGHT_BIN1, PIN_LOW);
-        rt_pin_write(RIGHT_BIN2, PIN_LOW);
+        /* TB6612: IN1=HIGH, IN2=HIGH enables short-brake for a harder stop. */
+        rt_pin_write(RIGHT_BIN1, PIN_HIGH);
+        rt_pin_write(RIGHT_BIN2, PIN_HIGH);
     }
 }
 
@@ -290,6 +294,22 @@ static void power_on_motor_thread(void *parameter)
     rt_kprintf("[PowerOn] Motor sequence completed\n");
 }
 
+#if MOTOR_BOOT_SELF_TEST
+static void motor_boot_self_test_thread(void *parameter)
+{
+    RT_UNUSED(parameter);
+
+    rt_kprintf("[MotorTest] Boot self-test: wait 3s, forward 3s, stop\n");
+    rt_thread_mdelay(3000);
+    forward();
+    g_motor_state = 1;
+    rt_thread_mdelay(3000);
+    stop();
+    g_motor_state = 0;
+    rt_kprintf("[MotorTest] Boot self-test completed\n");
+}
+#endif
+
 #if DTU_UART_DIAG_MODE
 static void dtu_diag_drain(rt_device_t dtu, int duration_ms)
 {
@@ -437,6 +457,24 @@ int main(void)
 
     /* ===== 第1步：初始化电机和加热片 ===== */
     motor_init();
+#if MOTOR_POWER_ON_SEQUENCE_TEST
+    {
+        rt_thread_t power_on_thread = rt_thread_create(
+            "power_motor",
+            power_on_motor_thread,
+            RT_NULL,
+            1024,
+            5,
+            10
+        );
+        if (power_on_thread != RT_NULL) {
+            rt_thread_startup(power_on_thread);
+            rt_kprintf("[Main] Power-on motor sequence thread started EARLY\n");
+        } else {
+            rt_kprintf("[Main] ERROR: Failed to create power-on motor thread!\n");
+        }
+    }
+#endif
     heater_relay_init();
 
     /* 上电默认加热14秒后自动关闭 */
@@ -487,8 +525,28 @@ int main(void)
     /* ===== 第4.6步：启动 UART2 无线命令接收（Air778E 4G）===== */
     rt_kprintf("[Main] UART2 AT sender owns 4G module; wireless command receiver disabled\n");
 
-    /* ===== 第5步：上电立即启动电机（前进6秒，后退8秒） ===== */
+    /* ===== 第5步：上电立即启动电机（前进/后退长序列测试） ===== */
+#if !MOTOR_POWER_ON_SEQUENCE_TEST
     rt_kprintf("[Main] Power-on motor sequence disabled; waiting for wireless commands\n");
+#endif
+#if MOTOR_BOOT_SELF_TEST
+    {
+        rt_thread_t motor_test_thread = rt_thread_create(
+            "motor_test",
+            motor_boot_self_test_thread,
+            RT_NULL,
+            1024,
+            19,
+            10
+        );
+        if (motor_test_thread != RT_NULL) {
+            rt_thread_startup(motor_test_thread);
+            rt_kprintf("[Main] Motor boot self-test thread started\n");
+        } else {
+            rt_kprintf("[Main] ERROR: Failed to create motor boot self-test thread!\n");
+        }
+    }
+#endif
 
     rt_kprintf("[Main] System running. Type 'stop' to stop motors.\n");
 

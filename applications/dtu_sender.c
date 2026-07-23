@@ -18,6 +18,7 @@
 
 #include "dtu_sender.h"
 #include <rtdevice.h>
+#include <rthw.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -37,11 +38,31 @@ static char g_dtu_pending_cmds[6][16];
 static volatile int g_dtu_pending_head = 0;
 static volatile int g_dtu_pending_tail = 0;
 static volatile int g_dtu_pending_count = 0;
+static int g_dtu_motor_report_thread_started = 0;
+static char g_dtu_motor_report_state[16] = "stop";
+static int g_dtu_motor_report_pos = 0;
+static volatile int g_dtu_motor_report_seq = 0;
 
 #define DTU_REMOTE_HOST "frp-oil.com"
 #define DTU_REMOTE_PORT 32762
 
 extern void start_motor_with_timeout(int dir);
+
+static void dtu_schedule_motor_report(const char *state, int position)
+{
+    rt_base_t level;
+
+    if (state == RT_NULL || state[0] == '\0') {
+        return;
+    }
+
+    level = rt_hw_interrupt_disable();
+    rt_strncpy(g_dtu_motor_report_state, state, sizeof(g_dtu_motor_report_state) - 1);
+    g_dtu_motor_report_state[sizeof(g_dtu_motor_report_state) - 1] = '\0';
+    g_dtu_motor_report_pos = position;
+    g_dtu_motor_report_seq++;
+    rt_hw_interrupt_enable(level);
+}
 
 static void dtu_exec_remote_cmd(const char *cmd)
 {
@@ -53,15 +74,15 @@ static void dtu_exec_remote_cmd(const char *cmd)
 
     if (rt_strcmp(cmd, "forward") == 0) {
         start_motor_with_timeout(1);
-        dtu_send_motor("forward", 0);
+        dtu_schedule_motor_report("forward", 0);
         rt_kprintf("[DTU-CMD] -> FORWARD executed (wireless)\n");
     } else if (rt_strcmp(cmd, "backward") == 0) {
         start_motor_with_timeout(-1);
-        dtu_send_motor("backward", 0);
+        dtu_schedule_motor_report("backward", 0);
         rt_kprintf("[DTU-CMD] -> BACKWARD executed (wireless)\n");
     } else if (rt_strcmp(cmd, "stop") == 0) {
         start_motor_with_timeout(0);
-        dtu_send_motor("stop", 0);
+        dtu_schedule_motor_report("stop", 0);
         rt_kprintf("[DTU-CMD] -> STOP executed (wireless)\n");
     } else {
         rt_kprintf("[DTU-CMD] Unknown remote command: %s\n", cmd);
@@ -96,6 +117,16 @@ static void dtu_queue_remote_cmd(const char *cmd)
     if (!dtu_is_known_cmd(cmd)) {
         return;
     }
+
+    /*
+     * Motor commands are safety/latency critical. Execute immediately when
+     * they are parsed, even if the AT sender is currently waiting for a
+     * CIPSEND/SEND OK response. Feedback is scheduled asynchronously by
+     * dtu_exec_remote_cmd(), so this does not recurse into the AT mutex.
+     */
+    rt_kprintf("[DTU-CMD] Immediate remote command: %s\n", cmd);
+    dtu_exec_remote_cmd(cmd);
+    return;
 
     if (g_dtu_pending_count >= 6) {
         rt_kprintf("[DTU-CMD] Queue full, drop command: %s\n", cmd);
@@ -288,7 +319,7 @@ static void dtu_downlink_thread_entry(void *parameter)
 
     while (1) {
         dtu_poll_downlink_once();
-        rt_thread_mdelay(100);
+        rt_thread_mdelay(10);
     }
 }
 
@@ -304,13 +335,73 @@ static void dtu_start_downlink_thread(void)
                            dtu_downlink_thread_entry,
                            RT_NULL,
                            2048,
-                           16,
+                           6,
                            10);
     if (tid != RT_NULL) {
         g_dtu_rx_thread_started = 1;
         rt_thread_startup(tid);
     } else {
         rt_kprintf("[DTU-CMD] ERROR: create downlink parser thread failed\n");
+    }
+}
+
+static void dtu_motor_report_thread_entry(void *parameter)
+{
+    int last_seq = 0;
+
+    RT_UNUSED(parameter);
+    rt_kprintf("[DTU-CMD] Motor report worker started\n");
+
+    while (1) {
+        int seq;
+        int pos;
+        char state[16];
+        rt_base_t level;
+
+        level = rt_hw_interrupt_disable();
+        seq = g_dtu_motor_report_seq;
+        pos = g_dtu_motor_report_pos;
+        rt_strncpy(state, g_dtu_motor_report_state, sizeof(state) - 1);
+        state[sizeof(state) - 1] = '\0';
+        rt_hw_interrupt_enable(level);
+
+        if (seq != last_seq) {
+            rt_thread_mdelay(20);
+
+            level = rt_hw_interrupt_disable();
+            seq = g_dtu_motor_report_seq;
+            pos = g_dtu_motor_report_pos;
+            rt_strncpy(state, g_dtu_motor_report_state, sizeof(state) - 1);
+            state[sizeof(state) - 1] = '\0';
+            rt_hw_interrupt_enable(level);
+
+            last_seq = seq;
+            dtu_send_motor(state, pos);
+        } else {
+            rt_thread_mdelay(50);
+        }
+    }
+}
+
+static void dtu_start_motor_report_thread(void)
+{
+    rt_thread_t tid;
+
+    if (g_dtu_motor_report_thread_started) {
+        return;
+    }
+
+    tid = rt_thread_create("dtu_motor",
+                           dtu_motor_report_thread_entry,
+                           RT_NULL,
+                           2048,
+                           18,
+                           10);
+    if (tid != RT_NULL) {
+        g_dtu_motor_report_thread_started = 1;
+        rt_thread_startup(tid);
+    } else {
+        rt_kprintf("[DTU-CMD] ERROR: create motor report thread failed\n");
     }
 }
 
@@ -574,6 +665,7 @@ int dtu_sender_init(void)
         }
         rt_mutex_release(g_dtu_lock);
         dtu_start_downlink_thread();
+        dtu_start_motor_report_thread();
         return RT_EOK;
     }
 

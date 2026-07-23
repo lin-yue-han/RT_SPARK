@@ -36,3 +36,13 @@ node_modules/
 
 # 工具产物 / 临时目录
 .codex_artifacts/
+
+# ESP32 本地工具链/缓存/固件下载（源码保留，环境不提交）
+tools/esp32_bno055/.venv/
+tools/esp32_bno055/.arduino_data/
+tools/esp32_bno055/.arduino_downloads/
+tools/esp32_bno055/micropython/*.bin
+tools/esp32_bno055/rt_spark_config.json
+
+# RT-Thread/SCons 本地构建数据库
+.sconsign.dblite

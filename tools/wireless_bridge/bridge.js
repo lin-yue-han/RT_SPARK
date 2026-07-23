@@ -236,12 +236,20 @@ httpServer.on("upgrade", (req, socket, head) => {
     ts: Date.now(),
   }));
 
-  // 如果 TCP 已连接，通知新客户端设备在线
-  if (tcpClients.size > 0) {
+  // 如果无线设备已连接，按设备类型通知新客户端恢复在线状态
+  if (countClientsByType("air778e") > 0) {
     ws.sendText(JSON.stringify({
       type: "system",
       event: "device_connected",
-      remote: "wireless",
+      remote: "Air778E",
+      ts: Date.now(),
+    }));
+  }
+  if (countClientsByType("esp32_bno055") > 0) {
+    ws.sendText(JSON.stringify({
+      type: "system",
+      event: "esp32_connected",
+      remote: "ESP32-BNO055",
       ts: Date.now(),
     }));
   }
@@ -345,7 +353,15 @@ httpServer.listen(WS_PORT, "0.0.0.0", () => {
 // ================================================================
 // TCP 服务端 — 等待 Sakura Frp 将 Air778E 连接转发进来
 // ================================================================
-function handleTcpLine(line) {
+function countClientsByType(type) {
+  let count = 0;
+  for (const client of tcpClients) {
+    if (client._deviceType === type) count++;
+  }
+  return count;
+}
+
+function handleTcpLine(line, socket) {
   if (line.length === 0) return;
 
   stats.totalMessages++;
@@ -359,6 +375,28 @@ function handleTcpLine(line) {
 
   if (parsed) {
     const msgType = parsed.type || "unknown";
+    if (parsed.source === "esp32_bno055" || parsed.source === "esp32_bno055_raw_estimate") {
+      if (socket && socket._deviceType !== "esp32_bno055") {
+        socket._deviceType = "esp32_bno055";
+        broadcastJSON({
+          type: "system",
+          event: "esp32_connected",
+          remote: socket.remoteAddress,
+          rssi: parsed.rssi,
+          ip: parsed.ip,
+          ts: Date.now(),
+        });
+      }
+    } else if (socket && !socket._deviceType && msgType !== "system") {
+      socket._deviceType = "air778e";
+      broadcastJSON({
+        type: "system",
+        event: "device_connected",
+        remote: socket.remoteAddress || "wireless",
+        ts: Date.now(),
+      });
+    }
+
     switch (msgType) {
       case "galloping":
         log("DATA", `舞动: state=${parsed.state} amp=${parsed.amp_dominant} freq=${parsed.dominant_freq}Hz`);
@@ -417,7 +455,7 @@ const tcpServer = net.createServer((socket) => {
     while ((idx = socket._rtSparkBuffer.indexOf("\n")) !== -1) {
       const line = socket._rtSparkBuffer.slice(0, idx).trim();
       socket._rtSparkBuffer = socket._rtSparkBuffer.slice(idx + 1);
-      handleTcpLine(line);
+      handleTcpLine(line, socket);
     }
   });
 
@@ -431,7 +469,15 @@ const tcpServer = net.createServer((socket) => {
     stats.tcpConnections = tcpClients.size;
     log("TCP", `Air778E/frp 连接断开  剩余:${tcpClients.size}`);
 
-    if (tcpClients.size === 0) {
+    if (socket._deviceType === "esp32_bno055" && countClientsByType("esp32_bno055") === 0) {
+      broadcastJSON({
+        type: "system",
+        event: "esp32_disconnected",
+        ts: Date.now(),
+      });
+    }
+
+    if (tcpClients.size === 0 || (socket._deviceType === "air778e" && countClientsByType("air778e") === 0)) {
       broadcastJSON({
         type: "system",
         event: "tcp_disconnected",

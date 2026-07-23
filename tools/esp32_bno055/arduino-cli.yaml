@@ -1,0 +1,7 @@
+directories:
+  data: D:\AI_Intro\RT-ThreadStudio\workspace\RT_SPARK\tools\esp32_bno055\.arduino_data
+  downloads: D:\AI_Intro\RT-ThreadStudio\workspace\RT_SPARK\tools\esp32_bno055\.arduino_downloads
+  user: D:\AI_Intro\RT-ThreadStudio\workspace\RT_SPARK\tools\esp32_bno055
+board_manager:
+  additional_urls:
+    - https://espressif.github.io/arduino-esp32/package_esp32_index.json

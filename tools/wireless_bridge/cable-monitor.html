@@ -365,6 +365,34 @@
       line-height: 1.5;
     }
 
+    .esp32-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: 10px;
+      color: var(--text-muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .esp32-status .esp32-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      box-shadow: none;
+      display: inline-block;
+    }
+
+    .esp32-status.online {
+      color: var(--success);
+    }
+
+    .esp32-status.online .esp32-dot {
+      background: var(--success);
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.7);
+    }
+
     .level-bar {
       height: 6px;
       background: var(--border);
@@ -805,7 +833,10 @@
       <div class="kpi-content">
         <div class="kpi-label">数据连接</div>
         <div class="kpi-value small" id="connStatus">WebSocket 断开</div>
-        <div class="kpi-meta" id="deviceStatus">Air778E: 未接入</div>
+        <div class="kpi-meta">
+          <span id="deviceStatus">Air778E: 未接入</span>
+          <span id="esp32Status" class="esp32-status" title="ESP32-BNO055 加速度从机状态"><span class="esp32-dot"></span>ESP32</span>
+        </div>
       </div>
     </div>
     <div class="card kpi-card">
@@ -828,7 +859,7 @@
       <div class="kpi-icon success">POS</div>
       <div class="kpi-content">
         <div class="kpi-label">小车位置</div>
-        <div class="kpi-value" id="kpiPosition">50.0%</div>
+        <div class="kpi-value" id="kpiPosition">100.0%</div>
         <div class="kpi-meta" id="kpiMotorState">电机停止</div>
       </div>
     </div>
@@ -1077,7 +1108,7 @@
       <div style="margin-top:12px;">
         <div class="title" style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">位置进度</div>
         <div class="position-track">
-          <div class="position-fill" id="posFill" style="width:50%;"></div>
+          <div class="position-fill" id="posFill" style="width:100%;"></div>
         </div>
         <div class="position-labels">
           <span>起点 0%</span>
@@ -1093,7 +1124,7 @@
     <div class="card-header">
       <div>
         <div class="card-title">远程控制</div>
-        <div class="card-subtitle">向小车发送运动与加热指令</div>
+        <div class="card-subtitle">向小车发送运动指令</div>
       </div>
     </div>
     <div class="control-grid">
@@ -1109,13 +1140,6 @@
       <div class="control-group">
         <span class="label">速度控制 <span id="speedValue" style="font-family:var(--mono);color:var(--accent);">30%</span></span>
         <input type="range" id="speedSlider" min="10" max="100" value="30" style="width:140px;accent-color:var(--accent);" oninput="updateSpeed(this.value)">
-      </div>
-      <div class="control-group">
-        <span class="label">加热除冰</span>
-        <div style="display:flex;gap:8px;">
-          <button class="btn heater" id="btnHeaterOn" onclick="sendCmd('heater_on')">加热开启</button>
-          <button class="btn heater" id="btnHeaterOff" onclick="sendCmd('heater_off')">加热关闭</button>
-        </div>
       </div>
       <div class="control-group">
         <span class="label">传感器校准</span>
@@ -1175,7 +1199,6 @@
     </div>
     <div style="display:flex;gap:10px;justify-content:flex-end;">
       <button onclick="closeAlertModal()" style="padding:8px 18px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface-raised);color:var(--text-primary);cursor:pointer;font-size:13px;">忽略</button>
-      <button onclick="startAutoPatrolFromAlert()" style="padding:8px 18px;border-radius:var(--radius-sm);border:none;background:var(--danger);color:#fff;cursor:pointer;font-size:13px;font-weight:500;">启动自动除雪</button>
     </div>
   </div>
 </div>
@@ -1199,10 +1222,11 @@ let ws = null;
 let stats = { totalMessages: 0, bytesReceived: 0, startTime: Date.now() };
 let lastHeartbeat = null;
 let deviceConnected = false;
+let esp32Connected = false;
 
 /* 运动控制本地状态 */
 let localMotorState = "stop";     /* 当前本地电机状态: stop/forward/backward */
-let localPosition = 50;           /* 本地模拟位置 0~100，初始在中间 */
+let localPosition = 100;          /* 本地模拟位置 0~100，初始在最右端 */
 let motorSpeed = 30;              /* 运动速度 10~100，默认30较慢 */
 let heaterState = false;          /* 加热状态 */
 let positionTimer = null;         /* 位置模拟定时器 */
@@ -1217,6 +1241,12 @@ let autoPatrolState = "idle";     /* idle/running/paused */
 let autoPatrolPhase = 0;          /* 0:中间→右, 1:右→左, 2:左→中 */
 let autoPatrolTimer = null;       /* 巡线检查定时器 */
 const AUTO_PATROL_SPEED = 20;     /* 自动巡线固定速度 */
+const POSITION_UPDATE_MS = 100;
+const POSITION_STEP_BASE = 0.8;
+const MANUAL_FORWARD_DURATION_MS = 30000;
+const MANUAL_BACKWARD_TO_CENTER_DURATION_MS = 15000;
+const MANUAL_FORWARD_TARGET = 0;
+const MANUAL_BACKWARD_TARGET = 50;
 
 const tempHistory = [];
 const humidityHistory = [];
@@ -1285,6 +1315,7 @@ function setConnStatus(connected) {
     connStatus.textContent = "无线链路断开";
     connStatus.className = "kpi-value small warn";
     document.getElementById("deviceStatus").textContent = "Air778E: 未接入";
+    setEsp32Status(false);
   }
 }
 
@@ -1312,6 +1343,14 @@ function handleMessage(data) {
     case "system":
       handleSystem(data);
       break;
+    case "device_hello":
+      handleDeviceHello(data);
+      break;
+    case "boot":
+    case "wifi_connected":
+    case "tcp_connected":
+      if (data.source === "esp32_bno055") handleDeviceHello(data);
+      break;
     case "raw":
       addLog("system", `原始数据: ${data.data}`);
       break;
@@ -1319,6 +1358,24 @@ function handleMessage(data) {
       handleRawAccel(data);
       break;
   }
+}
+
+function handleDeviceHello(d) {
+  if (d.source !== "esp32_bno055") return;
+  setEsp32Status(true, d);
+}
+
+function setEsp32Status(online, d = {}) {
+  esp32Connected = online;
+  const el = document.getElementById("esp32Status");
+  if (!el) return;
+  el.className = online ? "esp32-status online" : "esp32-status";
+  const rssi = Number.isFinite(Number(d.rssi)) ? ` ${d.rssi}` : "";
+  el.title = online
+    ? `ESP32-BNO055 已接入${d.ip ? " " + d.ip : ""}${rssi ? " RSSI" + rssi : ""}`
+    : "ESP32-BNO055 未接入";
+  el.innerHTML = `<span class="esp32-dot"></span>ESP32`;
+  if (online) addLog("system", `ESP32-BNO055 已接入${d.ip ? " " + d.ip : ""}${rssi ? " RSSI" + rssi : ""}`);
 }
 
 const stateConfig = {
@@ -1378,10 +1435,7 @@ function handleGalloping(d) {
 
   updateDangerReport();
 
-  /* 高危风险弹窗预警 */
-  if (state === "SEVERE" || state === "ICE") {
-    showAlertModal(state, d);
-  }
+  considerShakeAlert(state, lastGalloping);
 
   addLog("galloping", `state=${state} amp=${amp.toFixed(3)}m/s² freq=${freq.toFixed(2)}Hz disp=${disp.toFixed(4)}m`);
 }
@@ -1396,6 +1450,10 @@ let prevFiltered = 0;  /* 低通滤波器状态 */
 /* 上一帧原始值，用于计算差分 */
 let lastRaw = { ax: 0, ay: 0, az: 0 };
 let frameCount = 0;
+let severeShakeStartedAt = null;
+let lastAlertAt = 0;
+let rawRiskCandidate = "IDLE";
+let rawRiskCandidateStartedAt = null;
 
 /* 自适应缩放：根据数据量级自动补偿 */
 function autoScale(v) {
@@ -1415,6 +1473,10 @@ function handleRawAccel(d) {
   document.getElementById("rawAx").textContent = ax.toFixed(3) + " m/s²";
   document.getElementById("rawAy").textContent = ay.toFixed(3) + " m/s²";
   document.getElementById("rawAz").textContent = az.toFixed(3) + " m/s²";
+
+  const liveBadge = document.getElementById("liveBadge");
+  liveBadge.className = "card-badge badge-live";
+  liveBadge.textContent = "接收中";
 
   frameCount++;
   
@@ -1463,6 +1525,112 @@ function handleRawAccel(d) {
   
   waveBuffer.push(sample);
   if (waveBuffer.length > WAVE_BUFFER_SIZE) waveBuffer.shift();
+
+  updateGallopingFromRawAccel();
+}
+
+function updateGallopingFromRawAccel() {
+  if (waveBuffer.length < 20) return;
+
+  const recent = waveBuffer.slice(-Math.min(SW_SIZE, waveBuffer.length));
+  const minV = Math.min(...recent);
+  const maxV = Math.max(...recent);
+  const amp = maxV - minV;
+  const rms = Math.sqrt(recent.reduce((sum, v) => sum + v * v, 0) / recent.length);
+
+  let zeroCross = 0;
+  for (let i = 1; i < recent.length; i++) {
+    if ((recent[i - 1] <= 0 && recent[i] > 0) || (recent[i - 1] >= 0 && recent[i] < 0)) {
+      zeroCross++;
+    }
+  }
+  const durationSec = recent.length / SAMPLE_RATE;
+  const freq = durationSec > 0 ? Math.min(10, zeroCross / (2 * durationSec)) : 0;
+
+  /* 舞动判定以“幅度”为主，频率只展示不加权。
+     电缆真实舞动通常是低频大幅摆动，所以不要因为晃得不快就降风险。 */
+  let instantState = "IDLE";
+  if (amp >= 0.85 || (amp >= 0.70 && rms >= 0.20) || rms >= 0.42) instantState = "SEVERE";
+  else if (amp >= 0.28 || rms >= 0.10) instantState = "MODERATE";
+  else if (amp >= 0.07 || rms >= 0.025) instantState = "BREEZE";
+
+  const now = Date.now();
+  if (instantState !== rawRiskCandidate) {
+    rawRiskCandidate = instantState;
+    rawRiskCandidateStartedAt = now;
+  }
+  const riskSustainedMs = rawRiskCandidateStartedAt ? now - rawRiskCandidateStartedAt : 0;
+
+  let state = "IDLE";
+  if (instantState === "SEVERE" && riskSustainedMs >= 2000) state = "SEVERE";
+  else if (instantState === "MODERATE" && riskSustainedMs >= 2000) state = "MODERATE";
+  else if (instantState === "BREEZE" || instantState === "MODERATE" || instantState === "SEVERE") state = "BREEZE";
+
+  const confidence = Math.max(0.15, Math.min(0.95, amp / 1.0));
+  lastGalloping = {
+    type: "galloping",
+    source: "esp32_bno055_raw_estimate",
+    ts: Date.now(),
+    state,
+    amp_dominant: amp,
+    amp_x_pp: amp,
+    amp_y_pp: 0,
+    amp_z_pp: amp,
+    displacement_est: amp / 100,
+    dominant_freq: freq,
+    zero_cross_rate: zeroCross / Math.max(durationSec, 0.001),
+    rms_accel: rms,
+    vibr_energy: rms * rms,
+    torsion_deg: 0,
+    confidence,
+    instant_state: instantState,
+    risk_sustained_ms: riskSustainedMs,
+    amp_weight: 0.8,
+    freq_weight: 0.2
+  };
+
+  const cfg = stateConfig[state] || stateConfig.IDLE;
+  const liveBadge = document.getElementById("liveBadge");
+  liveBadge.className = `card-badge badge-${cfg.color === "warn" ? "warn" : cfg.color === "danger" ? "danger" : "live"}`;
+  liveBadge.textContent = cfg.label;
+
+  document.getElementById("domFreq").textContent = freq.toFixed(3) + " Hz";
+  document.getElementById("ampDom").textContent = amp.toFixed(3) + " m/s²";
+  document.getElementById("displacement").textContent = (amp / 100).toFixed(4) + " m";
+  document.getElementById("torsion").textContent = "0.0 °";
+  document.getElementById("confidence").textContent = (confidence * 100).toFixed(0) + "%";
+  document.getElementById("waveOverlay").textContent =
+    `f = ${freq.toFixed(2)} Hz · A = ${amp.toFixed(3)} m/s²`;
+
+  updateDangerReport();
+
+  considerShakeAlert(state, lastGalloping);
+}
+
+function isMotorMoving() {
+  return localMotorState === "forward" || localMotorState === "backward" || motorCountdown > 0;
+}
+
+function considerShakeAlert(state, data) {
+  const now = Date.now();
+  const severe = state === "SEVERE" || state === "ICE";
+  const alreadySustained = (data && Number(data.risk_sustained_ms || 0) >= 2000);
+
+  if (isMotorMoving() || !severe) {
+    severeShakeStartedAt = null;
+    return;
+  }
+
+  if (!severeShakeStartedAt) {
+    severeShakeStartedAt = now;
+    return;
+  }
+
+  const requiredMs = alreadySustained ? 0 : 5000;
+  if (now - severeShakeStartedAt >= requiredMs && now - lastAlertAt >= 15000) {
+    lastAlertAt = now;
+    showAlertModal(state, data);
+  }
 }
 
 function handleEnv(d) {
@@ -1521,19 +1689,27 @@ function handleSystem(d) {
       break;
     case "device_connected":
       deviceConnected = true;
-      document.getElementById("deviceStatus").textContent = `Air778E: 已接入 (${d.remote || "unknown"})`;
+      document.getElementById("deviceStatus").textContent = `Air778E: 已接入 (${d.remote || "wireless"})`;
       document.getElementById("deviceStatus").style.color = "var(--success)";
-      addLog("system", `Air778E 设备已连接 (${d.remote || "unknown"})`);
-      showToast("Air778E 设备已接入", "success");
+      addLog("system", `Air778E 已连接 (${d.remote || "wireless"})`);
+      showToast("Air778E 已接入", "success");
+      break;
+    case "esp32_connected":
+      setEsp32Status(true, d);
+      break;
+    case "esp32_disconnected":
+      setEsp32Status(false);
       break;
     case "device_disconnected":
+    case "tcp_disconnected":
       deviceConnected = false;
       document.getElementById("deviceStatus").textContent = "Air778E: 已断开";
       document.getElementById("deviceStatus").style.color = "var(--danger)";
-      addLog("system", "Air778E 设备断开");
-      showToast("Air778E 设备已断开", "error");
+      addLog("system", "Air778E 已断开");
+      showToast("Air778E 已断开", "error");
       break;
     case "command_sent":
+      applyLocalMotorCommand(d.command);
       document.getElementById("lastCmdTime").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
       setCmdStatus("success", `命令已发送 [无线]: ${d.command}`);
       setCmdButtonsDisabled(false);
@@ -1567,8 +1743,7 @@ function updateDangerReport() {
   else if (state === "ICE") gallopingScore = 90;
   else gallopingScore = 5;
 
-  if (amp > 5) gallopingScore = Math.max(gallopingScore, 85);
-  else if (amp > 2) gallopingScore = Math.max(gallopingScore, 50);
+  if ((state === "SEVERE" || state === "ICE") && amp > 5) gallopingScore = Math.max(gallopingScore, 85);
 
   setLevel("galloping", gallopingScore, cfg.color);
   document.getElementById("gallopingText").textContent = cfg.label;
@@ -1676,12 +1851,16 @@ function updateRecommendation(overall, galloping, ice, state) {
 // Commands
 // ================================================================
 function sendCmd(cmd) {
-  /* 本地模拟总是执行（无论是否连接） */
-  applyLocalMotorCommand(cmd);
-
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     showToast("无线链路未连接，命令未发送到星火一号", "warn");
     setCmdStatus("warn", "无线链路未连接 - 等待 Air778E 接入");
+    return;
+  }
+
+  if (!deviceConnected) {
+    showToast(`4G TCP not connected, command not sent: ${cmd}`, "warn");
+    setCmdStatus("warn", `4G TCP 未接入，未发送: ${cmd}`);
+    addLog("system", `命令未发送：4G TCP 未接入 - ${cmd}`);
     return;
   }
 
@@ -1696,13 +1875,14 @@ function sendCmd(cmd) {
 
 function applyLocalMotorCommand(cmd) {
   if (cmd === "forward" || cmd === "backward") {
-    localMotorState = cmd;
-    startPositionSimulation();
-    startMotorCountdown(6);
+    const target = cmd === "forward" ? MANUAL_FORWARD_TARGET : MANUAL_BACKWARD_TARGET;
+    const duration = cmd === "forward" ? MANUAL_FORWARD_DURATION_MS : MANUAL_BACKWARD_TO_CENTER_DURATION_MS;
+    startManualPositionMove(cmd, target, duration);
   } else if (cmd === "stop") {
     localMotorState = "stop";
     stopPositionSimulation();
     stopMotorCountdown();
+    severeShakeStartedAt = null;
   } else if (cmd === "heater_on") {
     heaterState = true;
     updateHeaterVisual();
@@ -1732,12 +1912,6 @@ function startMotorCountdown(seconds) {
     updateCountdownDisplay();
     if (motorCountdown <= 0) {
       stopMotorCountdown();
-      /* 倒计时结束，本地停止 */
-      localMotorState = "stop";
-      stopPositionSimulation();
-      setCmdStatus("success", "运行完成");
-      updateVehiclePosition(localPosition);
-      showToast("电机运行完成（6秒），已自动停止", "success");
     }
   }, 1000);
 }
@@ -1808,6 +1982,37 @@ function startPositionSimulation() {
       }
     }
     updateVehiclePosition(localPosition);
+  }, POSITION_UPDATE_MS);
+}
+
+function startManualPositionMove(cmd, target, durationMs) {
+  stopPositionSimulation();
+  severeShakeStartedAt = null;
+
+  localMotorState = cmd;
+  const start = localPosition;
+  const delta = target - start;
+  const startedAt = Date.now();
+  const seconds = Math.max(1, Math.ceil(durationMs / 1000));
+  startMotorCountdown(seconds);
+  updateVehiclePosition(localPosition);
+
+  positionTimer = setInterval(() => {
+    const ratio = Math.min(1, (Date.now() - startedAt) / durationMs);
+    localPosition = start + delta * ratio;
+    updateVehiclePosition(localPosition);
+
+    if (ratio >= 1) {
+      localPosition = target;
+      localMotorState = "stop";
+      updateVehiclePosition(localPosition);
+      stopPositionSimulation();
+      stopMotorCountdown();
+      const doneText = cmd === "forward" ? "前进完成：已到达另一端" : "后退完成：已回到中间";
+      setCmdStatus("success", doneText);
+      addLog("system", doneText);
+      showToast(doneText, "success");
+    }
   }, POSITION_UPDATE_MS);
 }
 
@@ -1914,7 +2119,7 @@ function setCmdStatus(type, text) {
 }
 
 function setCmdButtonsDisabled(disabled) {
-  const ids = ["btnForward", "btnBackward", "btnStop", "btnHeaterOn", "btnHeaterOff"];
+  const ids = ["btnForward", "btnBackward", "btnStop"];
   ids.forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = disabled;
@@ -2059,8 +2264,7 @@ let alertModalShown = false; /* 防止重复弹窗 */
 let alertModalTimer = null;
 
 function showAlertModal(state, data) {
-  /* 如果自动除雪已经在运行，不重复弹窗 */
-  if (autoPatrolState === "running") return;
+  if (isMotorMoving()) return;
 
   /* 防止同一状态重复弹窗 */
   if (alertModalShown) return;
@@ -2085,7 +2289,7 @@ function showAlertModal(state, data) {
       <div>• 置信度: ${conf}%</div>
     </div>
     <div style="margin-top:12px;padding:10px;background:rgba(239,68,68,0.08);border-radius:var(--radius-sm);border:1px solid rgba(239,68,68,0.2);font-size:13px;color:var(--danger);">
-      ⚠️ 建议立即启动自动除雪模式，小车将沿电缆进行除雪作业。
+      ⚠️ 请立即关注现场状态，确认电缆和小车是否安全。
     </div>
   `;
 
@@ -2344,10 +2548,6 @@ window.addEventListener("keydown", (e) => {
     case " ":
       e.preventDefault();
       sendCmd("stop");
-      break;
-    case "h":
-      e.preventDefault();
-      sendCmd(heaterState ? "heater_off" : "heater_on");
       break;
     case "a":
       e.preventDefault();
